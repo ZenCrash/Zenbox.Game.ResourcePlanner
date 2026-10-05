@@ -4,7 +4,7 @@ import { ArrowRight, ChevronDown, Zap } from "lucide-react";
 import type { AreaSummary } from "@/lib/area-summary";
 import {
   convertSummaryRate,
-  FUEL_EU_OUTPUT_ID, NET_FUEL_EU_OUTPUT_ID, isFuelEnergy, fuelEnergy,
+  FUEL_EU_OUTPUT_ID, NET_FUEL_EU_OUTPUT_ID, NORMALIZED_NET_FUEL_EU_OUTPUT_ID, isFuelEnergy, fuelEnergy,
   formatTotalEu,
   TOTAL_EU_INPUT_ID,
   type SummaryCalculation,
@@ -18,7 +18,9 @@ const fuelDescription = (id: string) => id === FUEL_EU_OUTPUT_ID
   ? "The energy value of a produced fuel."
   : id === NET_FUEL_EU_OUTPUT_ID
     ? "The energy value of a produced fuel minus its production cost."
-    : "";
+    : id === NORMALIZED_NET_FUEL_EU_OUTPUT_ID
+      ? "Produced fuel energy minus the group's production cost, per 1,000 L of fluid or one fuel cell/container."
+      : "";
 const format = (value: number | null) =>
   value === null ? "" : String(Number(value.toPrecision(12)));
 
@@ -130,12 +132,14 @@ export function SummaryRateCalculator({
   const fuelInputs = summary.outputs.filter(flow => fuelValues[flow.item.id]);
   const isFuel = isFuelEnergy(outputId);
   const inputs = isFuel ? fuelInputs : [energyInput, ...summary.inputs];
-  const isNetFuel = outputId === NET_FUEL_EU_OUTPUT_ID;
+  const isNormalizedNetFuel = outputId === NORMALIZED_NET_FUEL_EU_OUTPUT_ID;
+  const isNetFuel = outputId === NET_FUEL_EU_OUTPUT_ID || isNormalizedNetFuel;
   const fuel = fuelValues[inputId];
   const fuelFlow = summary.outputs.find(flow => flow.item.id === inputId);
   const energyOutputs: Flow[] = fuelInputs.length ? [
     { ...energyInput, item: { ...energyInput.item, id: FUEL_EU_OUTPUT_ID, name: "Fuel value" } },
     { ...energyInput, item: { ...energyInput.item, id: NET_FUEL_EU_OUTPUT_ID, name: "Net fuel value" } },
+    { ...energyInput, item: { ...energyInput.item, id: NORMALIZED_NET_FUEL_EU_OUTPUT_ID, name: "Net EU / unit" } },
   ] : [];
   const outputs = isFuel ? energyOutputs : summary.outputs;
   const isEnergy = inputId === TOTAL_EU_INPUT_ID;
@@ -162,15 +166,15 @@ export function SummaryRateCalculator({
   const input = inputs.find((flow) => flow.item.id === inputId);
   const output = outputs.find((flow) => flow.item.id === outputId);
   if (!input || !output) return null;
-  const numeric = isNetFuel ? fuelFlow?.rate ?? null : edit?.value.trim() ? Number(edit.value) : null;
-  const inputValue = isNetFuel ? format(fuelFlow?.rate ?? null) : isEnergy && edit.side === "input" ? format(summary.totalEu) : !edit
+  const numeric = isNormalizedNetFuel ? (fuelFlow?.item.kind === "fluid" ? 1000 : 1) : isNetFuel ? fuelFlow?.rate ?? null : edit?.value.trim() ? Number(edit.value) : null;
+  const inputValue = isNetFuel ? format(numeric) : isEnergy && edit.side === "input" ? format(summary.totalEu) : !edit
     ? format(input.rate)
     : edit.side === "input"
       ? edit.value
       : numeric === null
         ? ""
         : format(convertSummaryRate(numeric, output.rate, input.rate));
-  const outputValue = isFuel ? format(numeric === null || !fuel || !fuelFlow ? null : fuelEnergy(numeric, fuel.euPerUnit, fuelFlow.rate, summary.euPerTick, outputId === NET_FUEL_EU_OUTPUT_ID)) : isEnergy && edit.side === "input" ? format(output.rate) : !edit
+  const outputValue = isFuel ? format(numeric === null || !fuel || !fuelFlow ? null : fuelEnergy(numeric, fuel.euPerUnit, fuelFlow.rate, summary.euPerTick, isNetFuel)) : isEnergy && edit.side === "input" ? format(output.rate) : !edit
     ? format(output.rate)
     : edit.side === "output"
       ? edit.value

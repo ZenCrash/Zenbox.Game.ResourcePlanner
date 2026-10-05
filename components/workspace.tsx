@@ -144,7 +144,7 @@ export function Workspace({ project }: { project: Project }) {
   );
 }
 function Editor({ project }: { project: Project }) {
-  const { settings } = useDisplaySettings();
+  const { settings, update: updateDisplaySettings } = useDisplaySettings();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [itemPicker, setItemPicker] = useState(false);
   const [autoPlanner, setAutoPlanner] = useState(false);
@@ -1342,17 +1342,17 @@ function Editor({ project }: { project: Project }) {
     ]);
     markDirty();
   }
-  function addPlannedGraph(graph: PlannedGraph) {
+  function addPlannedGraph(graph: PlannedGraph, keepOpen = false) {
     if (!ready) return;
     const origin = insertionPoint();
     // Insert below existing cards so a complete route never lands on a recipe.
     if (nodes.length) origin.y = Math.max(origin.y, ...nodes.map((node) => node.position.y + (node.measured?.height ?? node.height ?? 480) + 160));
-    const group = plannerGroupNode(graph);
+    const group = plannerGroupNode({ ...graph, group: graph.group ? { ...graph.group, theme: 'default' } : undefined });
     const pasted = pasteSelection({ ...graph, nodes: group ? [{ ...group, draggable: true, selectable: true, dragHandle: '.summary-area-header, .summary-area-content' }, ...graph.nodes] : graph.nodes }, origin, () => crypto.randomUUID());
     setNodes((values) => [...values.map((node) => ({ ...node, selected: false })), ...pasted.nodes]);
     setEdges((values) => [...values.map((edge) => ({ ...edge, selected: false })), ...pasted.edges as DiagramEdge[]]);
     markDirty();
-    setAutoPlanner(false);
+    if (!keepOpen) setAutoPlanner(false);
     requestAnimationFrame(() => void flow.current?.fitView({ nodes: pasted.nodes.map(({ id }) => ({ id })), padding: 0.15, duration: 300 }));
   }
   const sidebarScaled = useMemo(() => {
@@ -2030,6 +2030,14 @@ function Editor({ project }: { project: Project }) {
                   </button>
                 </Panel>
                 <Controls showInteractive={false} />
+                <Panel position="bottom-left" className="diagram-overview-control">
+                  <label className="planner-overview-slider nodrag nopan nowheel" title="Show the zoomed-out view below this zoom level. Set to 0% to disable it.">
+                    <span>Zoomed-out view</span>
+                    <input type="range" min={0} max={100} step={5} value={Math.round(settings.overviewZoom * 100)}
+                      aria-label="Zoomed-out view threshold" onChange={event => updateDisplaySettings({ overviewZoom: Number(event.target.value) / 100 })} />
+                    <span>{Math.round(settings.overviewZoom * 100)}%</span>
+                  </label>
+                </Panel>
                 <MiniMap nodeColor={node => node.type === "summary" ? "#26384b" : "#a3a3a3"}
                   nodeStrokeColor={node => node.selected ? "#73baff" : node.type === "summary" ? "#526b8b" : "#343434"}
                   nodeStrokeWidth={2} maskColor="rgba(18,18,18,.8)" />

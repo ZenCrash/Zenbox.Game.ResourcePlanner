@@ -13,6 +13,11 @@ const SettingsContext = createContext({
 });
 export const useDisplaySettings = () => useContext(SettingsContext);
 
+export function OverviewZoomOverride({ value, children }: { value: number; children: ReactNode }) {
+  const parent = useDisplaySettings();
+  return <SettingsContext.Provider value={{ ...parent, settings: { ...parent.settings, overviewZoom: value } }}>{children}</SettingsContext.Provider>;
+}
+
 export function DisplaySettingsProvider({ children }: { children: ReactNode }) {
   const [settings, setSettings] = useState(defaultDisplaySettings);
   useEffect(() => {
@@ -144,7 +149,6 @@ export function DisplaySettingsPanel() {
       </div>}
       </div>
       {range("guiScale", "GUI size", "Changes interface size without resizing the sidebars or scaling the left sidebar.", 80, 150, 10, true)}
-      {range("overviewZoom", "Zoomed-out view below", "Switches recipe cards to their simplified view below this zoom level. Set to 0% to disable the zoomed-out view.", 0, 100, 5, true)}
       {toggle("showItemIds", "Show item IDs in tooltips", "Adds the game's item identifier to item tooltips.")}
     </section>
     <section className="settings-section" aria-labelledby="settings-lines-heading">

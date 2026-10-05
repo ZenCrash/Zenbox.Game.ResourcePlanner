@@ -148,6 +148,23 @@ test("container filling cannot stand alone or begin main or nested routes", asyn
   }
 });
 
+test('container draining cannot start direct or required ingredient routes', async () => {
+  const drain = recipe('drain', ['ethanol-capsule'], 'ethanol');
+  drain.handler = 'Fluid Canner';
+  drain.ingredients.at(-1)!.item.kind = 'fluid';
+  drain.ingredients.push(ingredient('empty-capsule', 'output', 1, 1));
+  const main = recipe('main', ['raw', 'ethanol'], 'target');
+  const standalone = await findAutoPlans({ ...options, inputId: undefined, targetId: 'ethanol' }, lookup([drain]));
+  assert.equal(standalone.plans.length, 0);
+  const direct = await findAutoPlans({ ...options, inputId: 'ethanol-capsule' }, lookup([drain, main]));
+  assert.equal(direct.plans.length, 0);
+  const nested = await findAutoPlans({ ...options, bannedNeededItemIds: ['ethanol'] }, lookup([drain, main]));
+  assert.equal(nested.plans.length, 0);
+  const produce = recipe('produce', ['raw'], 'ethanol-capsule');
+  const valid = await findAutoPlans({ ...options, targetId: 'ethanol', exactTarget: true }, lookup([produce, drain]));
+  assert(valid.plans.some(plan => plan.steps.map(step => step.recipe.id).join() === 'produce,drain'));
+});
+
 test("most output ranks batch output first and total EU cost second without an input", async () => {
   const small = recipe("small", ["ore"], "target", 1);
   const large = recipe("large", ["ore"], "target", 20);
@@ -223,7 +240,7 @@ test("draining oil and filling diesel through an empty bucket is not a fuel conv
   processing.ingredients[1].item.kind = "fluid";
   processing.ingredients[1].amount = 1000;
   const valid = await findAutoPlans(
-    { ...options, targetId: "diesel-bucket", inputId: "oil-bucket" },
+    { ...options, targetId: "diesel-bucket", inputId: "oil-bucket", inputFactors: { 'oil-bucket': 1, oil: .001 } },
     lookup([drain, fill, processing]),
   );
   assert(valid.plans.length > 0);
@@ -241,7 +258,7 @@ test("draining oil and filling diesel through an empty bucket is not a fuel conv
     { ...options, targetId: "bucket", inputId: "oil-bucket" },
     lookup([drain]),
   );
-  assert.equal(packaging.plans.length, 1);
+  assert.equal(packaging.plans.length, 0);
 });
 
 test("a route cannot rely on an external supply of its desired target", async () => {
@@ -692,4 +709,230 @@ test("preview placement supports recycling feedback without recursion loops", as
   assert.equal(columns.size, 4);
   assert([...columns.values()].every(n => Number.isFinite(n) && n >= 0));
   assert.equal(links.length, 4);
+});
+
+test('needed item bans reject external-only inputs but allow partial and full internal supply', async () => {
+  const process = recipe('needed-ban', ['raw', 'auxiliary'], 'target');
+  const partial = { ...process, id: 'partial-ban', ingredients: [...process.ingredients, ingredient('auxiliary', 'output', .5, 2)] };
+  const supplied = { ...process, id: 'supplied-ban', ingredients: [...process.ingredients, ingredient('auxiliary', 'output', 1, 2)] };
+  for (const exactTarget of [false, true]) {
+    const settings = { ...options, exactTarget, bannedNeededItemIds: ['auxiliary'] };
+    assert.equal((await findAutoPlans(settings, lookup([process]))).plans.length, 0);
+    assert.equal((await findAutoPlans(settings, lookup([partial]))).plans.length, 0);
+    assert.equal((await findAutoPlans(settings, lookup([supplied]))).plans.length, 0);
+    const producer = recipe('independent-supply', ['water'], 'auxiliary');
+    assert((await findAutoPlans(settings, lookup([partial, producer]))).plans.length > 0);
+    assert((await findAutoPlans({ ...settings, bannedNeededItemIds: [] }, lookup([process]))).plans.length > 0);
+    assert.equal((await findAutoPlans({ ...settings, bannedNeededItemIds: ['raw'] }, lookup([process]))).plans.length, 0);
+  }
+});
+
+test('needed bans add auxiliary production even when it needs unrelated external ingredients', async () => {
+  const main = recipe('fuel-from-seeds', ['raw', 'additive'], 'target');
+  const additive = recipe('make-additive', ['chemical-a', 'chemical-b', 'raw'], 'additive');
+  for (const exactTarget of [false, true]) {
+    const result = await findAutoPlans({ ...options, exactTarget, bannedNeededItemIds: ['additive'] }, lookup([main, additive]));
+    assert(result.plans.length > 0);
+    assert(result.plans.every(plan => plan.steps.some(step => step.recipe.id === additive.id)));
+    assert.equal(result.plans[0].inputAmount, 2);
+    assert.deepEqual(result.plans[0].supplies.map(s => s.item.id).sort(), ['chemical-a', 'chemical-b']);
+    assert.equal((await findAutoPlans({ ...options, exactTarget, maxSteps: 1, bannedNeededItemIds: ['additive'] }, lookup([main, additive]))).plans.length, 0);
+  }
+});
+
+test('recursive needed bans backtrack from water branches to hydrogen routes', async () => {
+  const recipes = [
+    recipe('oxygen-from-ethanol', ['ethanol'], 'oxygen'),
+    recipe('oxygen-from-methanol', ['methanol'], 'oxygen'),
+    recipe('ethanol-from-water', ['water'], 'ethanol', 1),
+    recipe('ethanol-from-hydrogen', ['hydrogen'], 'ethanol', 5),
+    recipe('methanol-from-water', ['water'], 'methanol', 1),
+    recipe('methanol-from-hydrogen', ['hydrogen'], 'methanol', 5),
+  ];
+  for (const exactTarget of [false, true]) {
+    const result = await findAutoPlans({ ...options, inputId: undefined, targetId: 'oxygen', exactTarget,
+      bannedNeededItemIds: ['ethanol', 'methanol', 'water'] }, lookup(recipes));
+    assert.equal(result.plans.length, 2);
+    for (const plan of result.plans) {
+      assert.deepEqual(plan.supplies.map(s => s.item.id), ['hydrogen']);
+      assert(plan.steps.some(step => step.recipe.id.endsWith('from-hydrogen')));
+      assert(!plan.steps.some(step => step.recipe.id.endsWith('from-water')));
+    }
+  }
+});
+
+test('needed bans recursively build new dependencies and respect the full step limit', async () => {
+  const recipes = [
+    recipe('oxygen-from-ethanol', ['ethanol'], 'oxygen'),
+    recipe('ethanol-from-methanol', ['methanol'], 'ethanol'),
+    recipe('methanol-from-water', ['water'], 'methanol', 1),
+    recipe('methanol-from-hydrogen', ['hydrogen'], 'methanol', 5),
+  ];
+  const settings = { ...options, inputId: undefined, targetId: 'oxygen', bannedNeededItemIds: ['ethanol', 'methanol', 'water'] };
+  const result = await findAutoPlans({ ...settings, maxSteps: 3 }, lookup(recipes));
+  assert.equal(result.plans.length, 1);
+  assert.equal(result.plans[0].steps.length, 3);
+  assert.deepEqual(result.plans[0].supplies.map(s => s.item.id), ['hydrogen']);
+  assert.equal((await findAutoPlans({ ...settings, maxSteps: 2 }, lookup(recipes))).plans.length, 0);
+  assert.equal((await findAutoPlans({ ...settings, bannedNeededItemIds: [...settings.bannedNeededItemIds, 'hydrogen'] }, lookup(recipes))).plans.length, 0);
+});
+
+test('required branches across alternatives get budget before optional ingredient searches', async () => {
+  const recipes = [
+    recipe('target-a', ['additive-a'], 'target'),
+    recipe('target-b', ['additive-b'], 'target'),
+    recipe('make-a', ['optional-input'], 'additive-a'),
+    recipe('make-b', ['hydrogen'], 'additive-b'),
+    ...Array.from({ length: 100 }, (_, i) => recipe(`optional-${i}`, ['unrelated'], 'optional-input')),
+  ];
+  const result = await findAutoPlans({ ...options, inputId: undefined, bannedNeededItemIds: ['additive-a', 'additive-b'] }, lookup(recipes), () => false, 60);
+  assert(result.plans.some(plan => plan.steps.some(step => step.recipe.id === 'make-a')));
+  assert(result.plans.some(plan => plan.steps.some(step => step.recipe.id === 'make-b')));
+});
+
+test('complex banned dependencies supply simpler byproducts before spending extra steps', async () => {
+  const main = recipe('main', ['raw', 'simple', 'complex'], 'target');
+  const simple = recipe('simple', ['ore'], 'simple');
+  const intermediate = recipe('intermediate', ['water'], 'intermediate');
+  intermediate.ingredients.push(ingredient('simple', 'output', 1, 1));
+  const complex = recipe('complex', ['intermediate'], 'complex');
+  const result = await findAutoPlans({ ...options, maxSteps: 3,
+    bannedNeededItemIds: ['simple', 'complex', 'intermediate'] }, lookup([main, simple, intermediate, complex]));
+  assert(result.plans.some(plan => plan.steps.length === 3 && !plan.steps.some(step => step.recipe.id === 'simple')));
+});
+
+test('needed bans match exact fluid or container IDs without banning equivalent forms', async () => {
+  const fluid = recipe('fluid-additive', ['raw', 'fluid:additive'], 'target');
+  fluid.ingredients[1].item.kind = 'fluid';
+  const cell = recipe('cell-additive', ['raw', 'additive-cell'], 'target');
+  for (const [banned, allowed] of [['fluid:additive', cell.id], ['additive-cell', fluid.id]]) {
+    const result = await findAutoPlans({ ...options, bannedNeededItemIds: [banned] }, lookup([fluid, cell]));
+    assert(result.plans.length > 0);
+    assert(result.plans.every(plan => plan.steps[0].recipe.id === allowed));
+  }
+});
+
+test('required branches do not spend extra steps replacing already partially supplied banned inputs', async () => {
+  const main = recipe('main', ['raw', 'additive', 'hydrogen'], 'target');
+  const additive = recipe('make-additive', ['water'], 'additive');
+  additive.ingredients.push(ingredient('hydrogen', 'output', .5, 1));
+  const hydrogen = recipe('make-hydrogen', ['water'], 'hydrogen');
+  const result = await findAutoPlans({ ...options, maxSteps: 3,
+    bannedNeededItemIds: ['additive', 'hydrogen'] }, lookup([main, additive, hydrogen]));
+  assert(result.plans.some(plan => plan.steps.length === 2 &&
+    plan.steps.some(step => step.recipe.id === 'make-additive') &&
+    plan.supplies.some(supply => supply.item.id === 'hydrogen')));
+  const plan = result.plans.find(plan => plan.steps.length === 2)!;
+  assert(plan.links.some(link => plan.steps[link.source].recipe.ingredients.some(i => i.direction === 'output' && i.slot === link.sourceSlot && i.itemId === 'hydrogen')),
+    'Show the actual partial byproduct connection in the preview');
+});
+
+test('banned starting materials cannot be justified by a circular byproduct chain', async () => {
+  const main = recipe('main', ['raw', 'sodium'], 'target');
+  main.ingredients.push(ingredient('sulfate', 'output', 1, 1));
+  const recycle = recipe('recycle', ['sulfate'], 'sodium');
+  const settings = { ...options, bannedNeededItemIds: ['sodium', 'sulfate'], maxSteps: 3 };
+  assert.equal((await findAutoPlans(settings, lookup([main, recycle]))).plans.length, 0);
+  const source = recipe('source', ['water'], 'sulfate');
+  const valid = await findAutoPlans(settings, lookup([main, recycle, source]));
+  assert(valid.plans.some(plan => plan.steps.some(step => step.recipe.id === 'source')));
+});
+
+test('cancellation after a valid progress result preserves that suggestion', async () => {
+  let cancelled = false;
+  const result = await findAutoPlans(options, lookup([recipe('progress', ['raw'], 'target')]), () => cancelled, 5000, progress => {
+    assert(progress.plans.length > 0);
+    cancelled = true;
+  });
+  assert(cancelled);
+  assert.equal(result.plans.length, 1);
+});
+
+test('max total EU filters energy per target item after machine balancing', async () => {
+  const producer = recipe('producer-limit', ['raw'], 'intermediate');
+  producer.durationTicks = 60;
+  producer.ingredients.at(-1)!.amount = 2;
+  const consumer = recipe('consumer-limit', ['intermediate'], 'target');
+  const lookupRecipes = lookup([producer, consumer]);
+  const result = await findAutoPlans(options, lookupRecipes);
+  const { plannerNormalizedTotalEu } = await import('../lib/planner-balance');
+  assert.equal(plannerNormalizedTotalEu(result.plans[0], 'target'), 50);
+  assert.equal((await findAutoPlans({ ...options, maxTotalEu: 49 }, lookupRecipes)).plans.length, 0);
+  assert((await findAutoPlans({ ...options, maxTotalEu: 50 }, lookupRecipes)).plans.length > 0);
+});
+
+test('max total EU normalizes fluids to 1000 mB for initial and nested searches', async () => {
+  const fluid = recipe('fluid-limit', ['raw'], 'target', 10);
+  fluid.durationTicks = 40;
+  fluid.ingredients.at(-1)!.item.kind = 'fluid';
+  fluid.ingredients.at(-1)!.amount = 1000;
+  for (const exactTarget of [false, true]) {
+    assert.equal((await findAutoPlans({ ...options, exactTarget, maxTotalEu: 399 }, lookup([fluid]))).plans.length, 0);
+    assert((await findAutoPlans({ ...options, exactTarget, maxTotalEu: 400 }, lookup([fluid]))).plans.length > 0);
+  }
+  assert.equal(parsePlannerFilters({ maxTotalEu: '800' }).maxTotalEu, '800');
+  assert.equal(parsePlannerFilters({ maxTotalEu: '-1' }).maxTotalEu, '');
+});
+
+test('ratio toggle defaults on and one-machine mode changes preview counts and the EU limit', async () => {
+  assert.equal(parsePlannerFilters({}).balanceMachines, true);
+  assert.equal(parsePlannerFilters({ balanceMachines: false }).balanceMachines, false);
+  const producer = recipe('unbalanced-producer', ['raw'], 'intermediate');
+  producer.durationTicks = 60;
+  producer.ingredients.at(-1)!.amount = 2;
+  const consumer = recipe('unbalanced-consumer', ['intermediate'], 'target');
+  const load = lookup([producer, consumer]);
+  for (const exactTarget of [false, true]) {
+    const balanced = await findAutoPlans({ ...options, exactTarget }, load);
+    assert.deepEqual(plannerBalance(balanced.plans[0]).machines, [3, 2]);
+    assert.equal((await findAutoPlans({ ...options, exactTarget, maxTotalEu: 45 }, load)).plans.length, 0);
+    const unbalanced = await findAutoPlans({ ...options, exactTarget, balanceMachines: false, maxTotalEu: 45 }, load);
+    assert(unbalanced.plans.length);
+    assert.deepEqual(plannerBalance(unbalanced.plans[0]).machines, [1, 1]);
+    const { plannerNormalizedTotalEu } = await import('../lib/planner-balance');
+    assert.equal(plannerNormalizedTotalEu(unbalanced.plans[0], 'target'), 40);
+  }
+});
+
+test('one-machine mode compares output rates without balancing the candidate routes', async () => {
+  const slow = recipe('slow-batch', ['raw'], 'target');
+  slow.durationTicks = 400;
+  slow.ingredients.at(-1)!.amount = 10;
+  const fast = recipe('fast-batch', ['raw'], 'target');
+  fast.durationTicks = 20;
+  fast.ingredients.at(-1)!.amount = 2;
+  const search = { ...options, priorities: ['output', 'eu', 'yield', 'singleblock'] as const };
+  assert.equal((await findAutoPlans({ ...search, priorities: [...search.priorities] }, lookup([slow, fast]))).plans[0].steps[0].recipe.id, 'slow-batch');
+  assert.equal((await findAutoPlans({ ...search, priorities: [...search.priorities], balanceMachines: false }, lookup([slow, fast]))).plans[0].steps[0].recipe.id, 'fast-batch');
+});
+
+test('fuel targets add net fuel value first and preserve a reordered priority', async () => {
+  const { prioritiesForTarget, defaultPlannerPriorities } = await import('../lib/planner-priorities');
+  const defaults = defaultPlannerPriorities();
+  assert.deepEqual(prioritiesForTarget(defaults, true), ['netFuel', ...defaults]);
+  assert.deepEqual(prioritiesForTarget(['eu', 'netFuel', 'output', 'yield', 'singleblock'], true), ['eu', 'netFuel', 'output', 'yield', 'singleblock']);
+  assert.deepEqual(prioritiesForTarget(['netFuel', ...defaults], false), defaults);
+  assert.equal(parsePlannerFilters({ priorities: ['netFuel', ...defaults] }).priorities?.[0], 'netFuel');
+});
+
+test('net fuel priority ranks energy after production cost per fuel unit rather than total output', async () => {
+  const small = recipe('small-fuel', ['raw'], 'target', 1);
+  const large = recipe('large-fuel', ['raw'], 'target', 4);
+  large.ingredients.at(-1)!.amount = 3;
+  for (const balanceMachines of [true, false]) {
+    const result = await findAutoPlans({ ...options, balanceMachines, fuelEuPerUnit: { target: 100 }, priorities: ['netFuel', 'eu', 'output', 'yield', 'singleblock'] }, lookup([small, large]));
+    assert.equal(result.plans[0].steps[0].recipe.id, 'small-fuel');
+    const costly = recipe('loss-making-fuel', ['raw'], 'target', 30);
+    costly.ingredients.at(-1)!.amount = 3;
+    const net = await findAutoPlans({ ...options, balanceMachines, fuelEuPerUnit: { target: 100 }, priorities: ['netFuel', 'eu', 'output', 'yield', 'singleblock'] }, lookup([small, costly]));
+    assert.equal(net.plans[0].steps[0].recipe.id, 'small-fuel');
+  }
+});
+
+test('net fuel comparison normalizes fluid and cell examples identically', async () => {
+  const { normalizedNetFuelValue } = await import('../lib/summary-rate');
+  assert.equal(normalizedNetFuelValue(41261760, 90000, true), 458464);
+  assert.equal(normalizedNetFuelValue(41261760, 90, false), 458464);
+  assert.equal(normalizedNetFuelValue(41261760 * 2, 180000, true), 458464);
+  assert.equal(normalizedNetFuelValue(-900, 90000, true), -10);
 });

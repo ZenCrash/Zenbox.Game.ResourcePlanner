@@ -65,14 +65,15 @@ test('fit viewport contains the complete measured group even in a small preview'
   }
 });
 
-test('wizard calculator defaults use target units and ordered fuel calculators', async () => {
+test('wizard defaults to only normalized net fuel for fuels and total EU for other targets', async () => {
   const { plannerDefaultCalculators } = await import('../lib/planner-calculators');
-  const { TOTAL_EU_INPUT_ID, FUEL_EU_OUTPUT_ID, NET_FUEL_EU_OUTPUT_ID } = await import('../lib/summary-rate');
+  const { TOTAL_EU_INPUT_ID, NORMALIZED_NET_FUEL_EU_OUTPUT_ID } = await import('../lib/summary-rate');
   const target = { id: 'fuel', name: 'Fuel', kind: 'fluid', registryId: 'fuel', metadata: 0, mod: '', group: '', tooltip: '[]', image: null };
   const fluid = plannerDefaultCalculators(target, true);
   assert.deepEqual(fluid.map(c => [c.inputId, c.outputId, c.side, c.value]), [
-    [TOTAL_EU_INPUT_ID, 'fuel', 'output', '1000'], ['fuel', FUEL_EU_OUTPUT_ID, 'input', '1000'], ['fuel', NET_FUEL_EU_OUTPUT_ID, 'input', '0'],
+    ['fuel', NORMALIZED_NET_FUEL_EU_OUTPUT_ID, 'input', '1000'],
   ]);
   assert.equal(plannerDefaultCalculators({ ...target, kind: 'item' }, false)[0].value, '1');
-  assert.equal(plannerDefaultCalculators(target, false).length, 1);
+  assert.deepEqual(plannerDefaultCalculators({ ...target, kind: 'item' }, true).map(c => [c.outputId, c.value]), [[NORMALIZED_NET_FUEL_EU_OUTPUT_ID, '1']]);
+  assert.deepEqual(plannerDefaultCalculators(target, false).map(c => [c.inputId, c.value]), [[TOTAL_EU_INPUT_ID, '1000']]);
 });

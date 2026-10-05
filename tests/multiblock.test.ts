@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { Item, Recipe } from '../lib/model';
 import { nodeSchema, rate } from '../lib/model';
-import { multiblockSetup, multiblockHatchLimits, multiblockOptions } from '../lib/multiblock';
+import { multiblockSetup, multiblockHatchLimits, multiblockOptions, coilHeat } from '../lib/multiblock';
 import { overclockRecipe } from '../lib/recipe-overclock';
 import { AreaSummaryCache } from '../lib/area-summary-cache';
 import { createScaleCalculator } from '../lib/scale-view';
@@ -13,6 +13,12 @@ const plannerOptions: PlannerOptions = { targetId: 'target', priority: 'eu', pri
 
 const item = (id: string, name: string, tooltip = '[]'): Item => ({ id, name, tooltip, registryId: id, metadata: 0, mod: 'GregTech', group: '', image: null, kind: 'item' });
 const coil = (heat: number) => item(`coil:${heat}`, 'Coil', JSON.stringify([`Base Heating Capacity =${heat} Kelvin`]));
+test('cached coil heat refreshes when its tooltip changes', () => {
+  const value = coil(1801);
+  assert.equal(coilHeat(value), 1801);
+  value.tooltip = JSON.stringify(['Base Heating Capacity =2701 Kelvin']);
+  assert.equal(coilHeat(value), 2701);
+});
 const hatch = (tier: string, voltage: number) => item(`hatch:${tier}`, `${tier} Energy Hatch`, JSON.stringify([`Voltage IN: ${voltage} (${tier})`]));
 function recipe(name = 'Electric Blast Furnace', heat = 1800): Recipe {
   return { id: 'r', name: 'Test', handler: 'Blast Furnace', durationTicks: 400, euPerTick: 120, layout: '{}', details: JSON.stringify([`Special value: ${heat}`]), ingredients: [],

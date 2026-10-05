@@ -17,6 +17,7 @@ export function PlannerFilterDropdown({
   onChange,
   loading = false,
   singleSelect = false,
+  searchable = !singleSelect,
 }: {
   label: string;
   emptyLabel: string;
@@ -25,6 +26,7 @@ export function PlannerFilterDropdown({
   onChange: (ids: string[]) => void;
   loading?: boolean;
   singleSelect?: boolean;
+  searchable?: boolean;
 }) {
   const menu = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLInputElement>(null);
@@ -58,8 +60,8 @@ export function PlannerFilterDropdown({
           popup.style.top = `${Math.max(8, Math.min(bounds.bottom + 4, window.innerHeight - 360))}px`;
           setQuery("");
           popup.showPopover();
-          if (singleSelect) popup.querySelector<HTMLButtonElement>('[aria-checked="true"]')?.focus();
-          else input.current?.focus();
+          if (searchable) input.current?.focus();
+          else popup.querySelector<HTMLButtonElement>('[aria-checked="true"]')?.focus();
         }}
       >
         <span id={`${id}-value`}>
@@ -101,7 +103,7 @@ export function PlannerFilterDropdown({
           }
         }}
       >
-        {!singleSelect && <div className="planner-filter-search">
+        {searchable && <div className="planner-filter-search">
           <input
             ref={input}
             aria-label={`Search ${label.toLowerCase()}`}
@@ -112,10 +114,10 @@ export function PlannerFilterDropdown({
           <button
             type="button"
             className="planner-filter-clear"
-            aria-label={`Clear selected ${label.toLowerCase()}`}
-            title="Clear selection"
-            disabled={!selected.length}
-            onClick={() => onChange([])}
+            aria-label={singleSelect ? `Clear ${label.toLowerCase()} search` : `Clear selected ${label.toLowerCase()}`}
+            title={singleSelect ? "Clear search" : "Clear selection"}
+            disabled={singleSelect ? !query : !selected.length}
+            onClick={() => singleSelect ? setQuery('') : onChange([])}
           >
             <X size={14} />
           </button>

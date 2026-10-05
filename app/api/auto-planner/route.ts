@@ -2,10 +2,16 @@ import { z } from "zod";
 import { catalog } from "@/lib/db";
 import { isGtnhInstalled } from "@/lib/game-packs";
 import { hydrateRecipeVariants } from "@/lib/recipe-data";
-import { findAutoPlans, plannerHandlerAllowed } from "@/lib/auto-planner";
+import { findAutoPlans, plannerHandlerAllowed, type PlannerResult } from "@/lib/auto-planner";
+import { plannerResultStream } from '@/lib/planner-result-stream';
 import { machineTiers } from "@/lib/machine-selection";
-import { plannerPriorityIds } from "@/lib/planner-priorities";
+import { plannerPriorityIds, validPlannerPriorities } from "@/lib/planner-priorities";
+import { fuelValues } from '@/lib/fuel-values';
 import { plannerRecipes } from "@/lib/planner-catalog";
+import { searchPlannerUntilDeadline } from '@/lib/planner-search';
+import { defaultPlannerSearchDuration } from '@/lib/planner-search-settings';
+
+export const maxDuration = 60;
 import {
   fluidLookupAmounts,
   emptyFluidContainers,
@@ -17,8 +23,10 @@ const schema = z.object({
   inputId: z.string().min(1).max(500).optional(),
   inputIds: z.array(z.string().min(1).max(500)).max(100).optional(),
   priority: z.enum(["yield", "eu", "output"]),
-  priorities: z.array(z.enum(plannerPriorityIds)).length(4).refine(values => new Set(values).size === 4).optional(),
+  priorities: z.array(z.enum(plannerPriorityIds)).min(4).max(5).refine(validPlannerPriorities).optional(),
   allowMultiblocks: z.boolean(),
+  balanceMachines: z.boolean().default(true),
+  maxTotalEu: z.number().finite().nonnegative().optional(),
   maxTier: z
     .number()
     .int()
@@ -26,9 +34,11 @@ const schema = z.object({
     .max(machineTiers.length - 1),
   maxSteps: z.number().int().min(1).max(100),
   maxSuggestions: z.number().int().min(1).max(100),
+  searchDurationSeconds: z.unknown().transform(() => defaultPlannerSearchDuration).default(defaultPlannerSearchDuration),
   excludedRecipes: z.array(z.string().max(500)).max(1000).default([]),
   excludedPlans: z.array(z.string().max(100000)).max(1000).default([]),
   bannedMachineIds: z.array(z.string().max(500)).max(10000).default([]),
+  bannedNeededItemIds: z.array(z.string().min(1).max(500)).max(10000).default([]),
   recipeTypes: z.array(z.string().max(500)).max(1000).default([]),
 });
 
@@ -55,6 +65,7 @@ export async function POST(request: Request) {
     );
   const options = parsed.data;
   const selectedInputIds = [...new Set(options.inputIds ?? (options.inputId ? [options.inputId] : []))];
+  options.bannedNeededItemIds = options.bannedNeededItemIds.filter(id => !selectedInputIds.includes(id));
   if (selectedInputIds.includes(options.targetId))
     return Response.json(
       { error: "Choose different input and target items." },
@@ -65,8 +76,20 @@ export async function POST(request: Request) {
       { error: "Choose an input item to compare output yield." },
       { status: 400 },
     );
+  if (request.headers.get('accept')?.includes('application/x-ndjson')) {
+    return new Response(plannerResultStream((signal, publish) => runSearch(options, signal, publish), request.signal, options.searchDurationSeconds * 1000), {
+      headers: { 'Content-Type': 'application/x-ndjson', 'Cache-Control': 'no-cache, no-transform', 'X-Accel-Buffering': 'no' },
+    });
+  }
+  return Response.json(await runSearch(options, request.signal));
+}
+
+async function runSearch(options: z.infer<typeof schema>, signal: AbortSignal, publish?: (result: PlannerResult) => void) {
+  const selectedInputIds = [...new Set(options.inputIds ?? (options.inputId ? [options.inputId] : []))];
   const started = Date.now();
-  let capped = false;
+  const stopped = () => signal.aborted || Date.now() - started >= options.searchDurationSeconds * 1000;
+  const emptyResult: PlannerResult = { plans: [], examined: 0, limited: true };
+  if (stopped()) return emptyResult;
   const [targetAmounts, inputForms] = await Promise.all([
     options.exactTarget ? Promise.resolve({ [options.targetId]: 1 }) : fluidLookupAmounts(options.targetId),
     Promise.all(selectedInputIds.map(id => fluidLookupAmounts(id))),
@@ -76,11 +99,14 @@ export async function POST(request: Request) {
     inputFactors[id] = Math.min(inputFactors[id] ?? Infinity, 1 / amount);
   }
   const inputIds = Object.keys(inputFactors);
+  options = { ...options, bannedNeededItemIds: options.bannedNeededItemIds.filter(id => !inputIds.includes(id)) };
   const packagingItemIds = await emptyFluidContainers([
     ...new Set([...Object.keys(targetAmounts), ...inputIds]),
   ]);
+  if (stopped()) return emptyResult;
   const sourceRecipes: { recipeId: string }[] = [];
   for (let start = 0; start < inputIds.length; start += 300) {
+    if (stopped()) return emptyResult;
     const batch = inputIds.slice(start, start + 300);
     sourceRecipes.push(
       ...(await catalog.ingredient.findMany({
@@ -104,6 +130,7 @@ export async function POST(request: Request) {
   ];
   const nearInputIds = new Set<string>();
   for (let start = 0; start < sourceIds.length; start += 300) {
+    if (stopped()) return emptyResult;
     const nearby = await catalog.ingredient.findMany({
       where: {
         recipeId: { in: sourceIds.slice(start, start + 300) },
@@ -114,25 +141,34 @@ export async function POST(request: Request) {
     });
     nearby.forEach((item) => nearInputIds.add(item.itemId));
   }
-  const result = await findAutoPlans(
-    {
+  const searchOptions = {
       ...options,
+      fuelEuPerUnit: options.priorities?.includes('netFuel') ? Object.fromEntries(Object.entries(await fuelValues(Object.keys(targetAmounts))).map(([id, fuel]) => [id, fuel.euPerUnit])) : undefined,
       targetAmounts,
       inputFactors,
       packagingItemIds,
       nearInputIds: [...nearInputIds],
-    },
-    async (itemId) => {
-      const loaded = await plannerRecipes(
-        itemId,
-        options.recipeTypes,
-        options.excludedRecipes,
-      );
-      capped ||= loaded.capped;
-      return loaded.recipes;
-    },
-    () => request.signal.aborted || Date.now() - started > 20000,
-  );
+    };
+  const recipeCache = new Map<string, { limit: number; loaded: Awaited<ReturnType<typeof plannerRecipes>> }>();
+  const result = await searchPlannerUntilDeadline(async (budget, interrupted) => {
+    let capped = false;
+    const candidateLimit = Math.min(10000, 200 * budget / 5000);
+    const attempt = await findAutoPlans(searchOptions, async itemId => {
+      if (interrupted()) return [];
+      let entry = recipeCache.get(itemId);
+      if (!entry || (entry.loaded.capped && entry.limit < candidateLimit)) {
+        entry = { limit: candidateLimit, loaded: await plannerRecipes(itemId, options.recipeTypes, options.excludedRecipes, candidateLimit) };
+        recipeCache.set(itemId, entry);
+      }
+      capped ||= entry.loaded.capped;
+      return entry.loaded.recipes;
+    }, interrupted, budget, publish);
+    return { ...attempt, limited: attempt.limited || capped };
+  }, {
+    aborted: stopped,
+    timeoutMs: Math.max(0, options.searchDurationSeconds * 1000 - (Date.now() - started)),
+    maxSuggestions: options.maxSuggestions,
+  });
   const selected = [
     ...new Map(
       result.plans.flatMap((plan) =>
@@ -142,14 +178,15 @@ export async function POST(request: Request) {
   ];
   const hydrated = new Map<string, (typeof selected)[number]>();
   for (let start = 0; start < selected.length; start += 100) {
+    if (stopped()) break;
     for (const recipe of await hydrateRecipeVariants(
       selected.slice(start, start + 100),
     ))
       hydrated.set(recipe.id, recipe);
   }
   for (const plan of result.plans)
-    for (const step of plan.steps) step.recipe = hydrated.get(step.recipe.id)!;
-  return Response.json({ ...result, limited: result.limited || capped });
+    for (const step of plan.steps) step.recipe = hydrated.get(step.recipe.id) ?? step.recipe;
+  return result;
 }
 
 export async function GET() {

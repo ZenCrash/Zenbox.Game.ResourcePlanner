@@ -54,8 +54,13 @@ export const multiblockPartIds = [
   ...Array.from({ length: 10 }, (_, i) => `gregtech:gt.blockmachines:${40 + i}`),
   ...Array.from({ length: 5 }, (_, i) => `gregtech:gt.blockmachines:${11300 + i}`),
 ];
+const coilHeatCache = new WeakMap<Item, { tooltip: string; heat: number }>();
 export function coilHeat(item: Item) {
-  return Number(item.tooltip.replace(/§./g, '').match(/Base Heating Capacity\s*=\s*(\d+)/)?.[1] ?? 0);
+  const cached = coilHeatCache.get(item);
+  if (cached?.tooltip === item.tooltip) return cached.heat;
+  const heat = Number(item.tooltip.replace(/§./g, '').match(/Base Heating Capacity\s*=\s*(\d+)/)?.[1] ?? 0);
+  coilHeatCache.set(item, { tooltip: item.tooltip, heat });
+  return heat;
 }
 export function requiredHeat(recipe: Recipe) {
   let lines: string[] = [];

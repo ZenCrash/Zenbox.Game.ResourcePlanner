@@ -1620,7 +1620,10 @@ h3 {
   flex-direction: column;
   overflow: hidden;
 }
-.auto-planner-dialog > .recipe-browser-heading { flex-shrink: 0; }
+.auto-planner-dialog > .recipe-browser-heading {
+  flex-shrink: 0;
+  grid-template-columns: minmax(0, 1fr) 32px;
+}
 /* Keep flow geometry in unscaled CSS pixels. Scale the planner controls,
    rather than the ancestor of React Flow's node/handle measurements. */
 .workspace .dialog.auto-planner-dialog {
@@ -1631,6 +1634,8 @@ h3 {
 .workspace .planner-main > :not(.planner-preview) {
   zoom: var(--gui-scale, 1);
 }
+.planner-layout > .planner-options { zoom: .85; }
+.workspace .planner-layout > .planner-options { zoom: calc(var(--gui-scale, 1) * .85); }
 .planner-layout {
   display: grid;
   flex: 1;
@@ -1643,64 +1648,71 @@ h3 {
 .planner-main { grid-column: 1; grid-row: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 .planner-main > :not(.planner-preview) { flex-shrink: 0; }
 .planner-calculator-results-fit {
-  position: relative;
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  width: calc(100% - 24px);
+  z-index: 6;
+  pointer-events: none;
   min-width: 0;
   overflow: hidden;
 }
 .planner-calculator-results {
   position: absolute;
-  top: 8px;
+  top: 0;
   left: 0;
   width: max-content;
   transform-origin: top left;
-  display: flex;
-  align-items: center;
-  flex-wrap: nowrap;
-  gap: 12px;
+  display: grid;
+  grid-template-columns: max-content max-content 12px max-content max-content;
+  gap: 8px 4px;
   white-space: nowrap;
+  pointer-events: auto;
 }
 .planner-calculator-results .summary-rate-text {
-  flex: 0 0 auto;
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+  align-items: center;
   white-space: nowrap;
-}
-.planner-calculator-results .summary-rate-text + .summary-rate-text {
-  border-left: 1px solid #526b8b;
-  padding-left: 12px;
 }
 .planner-calculator-results .summary-rate-text > span,
 .planner-calculator-results .summary-rate-text-resource > span,
-.planner-calculator-results .summary-rate-resource-label > span {
+:is(.planner-calculator-results, .planner-needed-items) .summary-rate-resource-label > span {
   flex: 0 0 auto;
   overflow: visible;
   text-overflow: clip;
   white-space: nowrap;
 }
-.planner-calculator-results .summary-rate-text-resource { grid-template-columns: max-content max-content; }
-.planner-calculator-results .summary-rate-resource-label {
-  padding: 4px;
+.planner-calculator-results .summary-rate-text-resource {
+  grid-column: span 2;
+  grid-template-columns: subgrid;
+}
+:is(.planner-calculator-results, .planner-needed-items) .summary-rate-resource-label {
   border: 1px solid #488bc3;
   border-radius: 4px;
   background: transparent;
   color: #e8f4ff;
 }
-.planner-calculator-results .summary-rate-resource-label,
-.planner-calculator-results .summary-rate-resource-amount {
+:is(.planner-calculator-results, .planner-needed-items) .summary-rate-resource-label,
+:is(.planner-calculator-results, .planner-needed-items) .summary-rate-resource-amount {
   box-sizing: border-box;
-  height: 28px;
+  height: 20px;
+  padding: 2px;
+  line-height: 14px;
   display: inline-flex;
   align-items: center;
 }
-.planner-calculator-results .summary-rate-resource-amount {
-  padding: 0 6px 0 4px;
+:is(.planner-calculator-results, .planner-needed-items) .summary-rate-resource-amount {
   gap: 3px;
   border: 1px solid #526b8b;
   border-radius: 4px;
   background: var(--panel-gradient);
   color: #e6e6e6;
 }
-.planner-calculator-results .summary-rate-resource-unit { color: #e8f4ff; }
-.planner-calculator-results .summary-rate-resource-label,
-.planner-calculator-results .summary-rate-resource-amount {
+:is(.planner-calculator-results, .planner-needed-items) .summary-rate-resource-unit { color: #e8f4ff; }
+:is(.planner-calculator-results, .planner-needed-items) .summary-rate-resource-label,
+:is(.planner-calculator-results, .planner-needed-items) .summary-rate-resource-amount {
   border-color: #394b62;
   opacity: .6;
   cursor: default;
@@ -1744,6 +1756,9 @@ h3 {
   border-radius: 4px;
 }
 .planner-options input, .planner-options select { width: 100%; min-width: 0; }
+.planner-eu-input { position: relative; min-width: 0; }
+.planner-options .planner-eu-input input { margin-top: 0; padding-right: 38px; }
+.planner-eu-input > span { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); pointer-events: none; color: var(--muted); }
 .planner-options .planner-checkbox { flex-direction: row; align-items: center; }
 .planner-filter { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .planner-filter > button { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 42px; text-align: left; }
@@ -1828,9 +1843,108 @@ h3 {
 .planner-explanation { color: #a9bacb; font-size: 12px; }
 .planner-notice { color: #facc15; }
 .planner-results-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin: 12px 0; }
-.planner-preview { flex: 1; height: 0; min-height: 0; border: 1px solid #488bc3; background: #171c19; }
+.planner-preview { position: relative; flex: 1; height: 0; min-height: 0; border: 1px solid #488bc3; background: #171c19; }
+.planner-cached-preview { position: absolute; inset: 0; }
+.planner-needed-items { position: absolute; top: 12px; right: 12px; z-index: 8; width: max-content; max-width: 38%; max-height: calc(100% - 72px); overflow: auto; display: grid; grid-template-columns: minmax(0, max-content) max-content; gap: 8px 4px; font-size: 11px; }
+.planner-needed-item { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; align-items: center; min-width: 0; height: 20px; box-sizing: border-box; padding: 2px; border: 1px solid #394b62; border-radius: 4px; background: var(--panel-gradient); color: #e6e6e6; opacity: .6; white-space: nowrap; cursor: default; }
+.planner-needed-item > .summary-rate-resource-label,
+.planner-needed-item > .summary-rate-resource-amount { height: 14px; padding: 0; border: 0; border-radius: 0; background: transparent; opacity: 1; }
+.planner-needed-item > .summary-rate-resource-amount:not(.summary-rate-resource-label) { justify-content: flex-end; }
+.planner-needed-items .summary-rate-resource-label { gap: 4px; min-width: 0; }
+.planner-needed-items .summary-rate-resource-label > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.planner-needed-items .item-slot { width: 14px; height: 14px; padding: 0; border: 0; background: transparent; flex-shrink: 0; }
+.planner-needed-items .item-slot > .item-art,
+.planner-needed-items .item-slot > .item-art > img,
+.planner-needed-items .item-slot .missing-item { width: 14px; height: 14px; }
+.planner-needed-items .item-slot .missing-item { font-size: 11px; line-height: 14px; }
+.planner-needed-items [data-fluid] .item-slot > .item-art > img { border: 1px solid #000; box-sizing: border-box; }
+.planner-needed-ban-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.planner-needed-menu button.planner-needed-copy { background: #7e22ce; color: #fff; margin-bottom: 3px; }
+.planner-needed-menu button.planner-needed-copy:hover:not(:disabled) { background: #9333ea; }
+.planner-needed-ban-row + .planner-needed-ban-row { margin-top: 3px; }
+.planner-needed-ban-group { border: 1px solid var(--line); border-radius: 4px; padding: 3px; margin-block: 4px; }
+.planner-needed-ban-heading { display: flex; align-items: center; gap: 6px; padding: 4px; cursor: pointer; list-style: none; border-radius: 4px; }
+.planner-needed-ban-heading::-webkit-details-marker { display: none; }
+.planner-needed-ban-heading > .planner-needed-ban-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.planner-needed-ban-fluid { flex: 0 0 24px; width: 24px; height: 24px; }
+.planner-needed-ban-heading > svg { flex-shrink: 0; transform: rotate(-90deg); }
+.planner-needed-ban-group[open] > .planner-needed-ban-heading > svg { transform: none; }
+.planner-needed-ban-group[open] > .planner-needed-ban-heading { margin-bottom: 3px; }
+.planner-needed-ban-heading[data-pending] { background: #34242e; }
+.planner-needed-ban-heading:hover { outline: 1px solid var(--line); }
+.planner-needed-ban-count { flex-shrink: 0; }
+.planner-needed-menu .planner-needed-ban-heading > button { margin-left: auto; padding: 4px; width: 24px; flex-shrink: 0; }
+.planner-needed-ban-row[data-pending] { background: #34242e; border-radius: 4px; }
+.planner-needed-ban-row > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.planner-needed-menu .planner-needed-ban-row .item-slot,
+.planner-needed-menu .planner-needed-ban-fluid .item-slot { display: inline-flex; align-items: center; justify-content: center; width: 24px; min-width: 24px; height: 24px; flex: 0 0 24px; padding: 0; margin: 0; gap: 0; }
+.planner-needed-ban-row .item-slot > .item-art,
+.planner-needed-ban-row .item-slot > .item-art > img,
+.planner-needed-ban-fluid .item-slot > .item-art,
+.planner-needed-ban-fluid .item-slot > .item-art > img { width: 16px; height: 16px; flex-shrink: 0; }
+.planner-needed-ban-fluid .item-slot > .item-art > img { border: 1px solid #000; box-sizing: border-box; }
+.diagram-selection-menu.planner-needed-menu { position: fixed; inset: auto; margin: 0; width: 300px; max-width: calc(100vw - 16px); max-height: 50vh; overflow: auto; background: var(--panel-gradient); border-color: var(--line); }
+.planner-needed-menu:not(:popover-open) { display: none; }
+.planner-needed-menu-separator { width: 100%; margin: 5px 0; border: 0; border-top: 1px solid var(--line); }
+.planner-needed-menu .planner-needed-ban-row > button:not(.item-slot) { margin-left: auto; padding: 4px; width: 24px; flex-shrink: 0; }
+.planner-has-needed .planner-calculator-results-fit { width: calc(60% - 24px); }
+.auto-planner-dialog .planner-overview-slider,
+.diagram-overview-control .planner-overview-slider {
+  position: absolute;
+  bottom: 15px;
+  left: 56px;
+  z-index: 7;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  height: calc(36px * var(--gui-scale, 1));
+  box-sizing: border-box;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--panel-gradient);
+  color: var(--foreground);
+  font-size: 11px;
+  white-space: nowrap;
+  max-width: calc(100% - 72px);
+}
+.auto-planner-dialog .planner-overview-slider input,
+.diagram-overview-control .planner-overview-slider input {
+  width: 120px;
+  min-width: 35px;
+  padding: 0;
+  margin: 0;
+  accent-color: var(--accent);
+}
+.diagram-overview-control.react-flow__panel { margin-left: 64px; }
+.diagram-overview-control .planner-overview-slider {
+  position: static;
+  height: 26px;
+  min-height: 26px;
+  max-height: 26px;
+  max-width: none;
+}
+.planner-loading-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #0008;
+}
+.planner-loading-overlay .diagram-loading-dialog { width: min(360px, calc(100% - 32px)); }
 .planner-preview-card { width: 400px; }
-.planner-preview-actions { display: flex; justify-content: flex-end; padding-top: 8px; }
+.planner-preview-actions { display: flex; align-items: center; justify-content: flex-end; gap: 12px; padding-top: 8px; flex-shrink: 0; }
+.planner-preview-actions > button { white-space: nowrap; height: 36px; box-sizing: border-box; }
+.planner-preview-actions > button[aria-label="Add to diagram and keep wizard open"] {
+  align-self: stretch;
+  aspect-ratio: 1;
+  padding: 0;
+  width: 36px;
+  flex: 0 0 36px;
+}
 .planner-summary-overlay { width: min(520px, calc(100% - 24px)); max-height: calc(100% - 24px); }
 .planner-summary-overlay .summary-area { width: max-content; height: auto; }
 .planner-summary-overlay .summary-area-content { max-height: none; overflow: visible; cursor: default; content-visibility: visible; }

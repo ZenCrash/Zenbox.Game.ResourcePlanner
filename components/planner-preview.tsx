@@ -17,7 +17,7 @@ import { useDisplaySettings } from "./display-settings";
 import { initialRoute } from "@/lib/initial-route";
 import { PlannerWindow } from "./planner-window";
 import { SummaryAreaView, type SummaryAreaData } from "./summary-area";
-import type { Node, NodeProps, NodeChange } from "@xyflow/react";
+import type { Node, NodeProps, NodeChange, Viewport } from "@xyflow/react";
 import { plannerGroupNode } from "@/lib/planner-group";
 import { summarizePlanner, plannerItemPortState, setPlannerItemDisabled } from '@/lib/planner-summary';
 import { plannerPreviewBounds } from '@/lib/planner-preview-bounds';
@@ -44,7 +44,7 @@ const nodeTypes = { recipe: MachineCard, summary: PlannerGroup };
 const edgeTypes = { grid: GridEdge };
 type IngredientTarget = { nodeId: string; slot: number; item: Item };
 
-export function PlannerPreview({ graph, onChange, machineLimits }: { graph: PlannedGraph; onChange: (graph: PlannedGraph) => void; machineLimits: { allowMultiblocks: boolean; maxTier: number } }) {
+export function PlannerPreview({ graph, onChange, machineLimits, initialViewport, onViewportChange, active = true, onReady }: { onReady?: () => void; active?: boolean; initialViewport?: Viewport; onViewportChange?: (viewport: Viewport) => void; graph: PlannedGraph; onChange: (graph: PlannedGraph) => void; machineLimits: { allowMultiblocks: boolean; maxTier: number; maxTotalEu?: number; balanceMachines?: boolean } }) {
   const wheelBoundary = `planner-wheel-${useId().replace(/[^a-zA-Z0-9_-]/g, "")}`;
   const inherited = useContext(EditorContext);
   const { settings } = useDisplaySettings();
@@ -52,6 +52,7 @@ export function PlannerPreview({ graph, onChange, machineLimits }: { graph: Plan
   const [menu, setMenu] = useState<{ x: number; y: number; targets: IngredientTarget[] }>();
   const [branch, setBranch] = useState<IngredientTarget & { x: number; y: number }>();
   const [error, setError] = useState("");
+  useEffect(() => { if (!active) { setMenu(undefined); setBranch(undefined); } }, [active]);
   const previewContainer = useRef<HTMLDivElement>(null);
   const latest = useRef({ graph, onChange });
   latest.current = { graph, onChange };
@@ -68,22 +69,36 @@ export function PlannerPreview({ graph, onChange, machineLimits }: { graph: Plan
   }, []);
   const viewportWidth = useStore(state => state.width);
   const viewportHeight = useStore(state => state.height);
-  const initiallyFitted = useRef(false);
+  const initiallyFitted = useRef(!!initialViewport);
+  const readiness = useRef({ active, onReady });
+  readiness.current = { active, onReady };
+  useEffect(() => {
+    if (!active || !initiallyFitted.current) return;
+    let second = 0;
+    const first = requestAnimationFrame(() => { second = requestAnimationFrame(() => readiness.current.onReady?.()); });
+    return () => { cancelAnimationFrame(first); cancelAnimationFrame(second); };
+  }, [active]);
   const bounds = plannerPreviewBounds(graph);
   const readyToFit = !!bounds && (!graph.group || graph.nodes.length < 2 || graph.group.headerHeight !== undefined);
   const fitKey = readyToFit ? JSON.stringify(bounds) : '';
   useEffect(() => {
-    if (initiallyFitted.current || !flow.viewportInitialized || !fitKey || !viewportWidth || !viewportHeight) return;
+    if (!active || initiallyFitted.current || !flow.viewportInitialized || !fitKey || !viewportWidth || !viewportHeight) return;
     // Depend on geometry, not render/update callbacks: dimension notifications
     // must not continually cancel the initial fit, and React Flow must not race it.
     const timer = window.setTimeout(() => {
       const viewport = getViewportForBounds(JSON.parse(fitKey), viewportWidth, viewportHeight, .001, 1, .15);
       void flow.setViewport(viewport, { duration: 0 }).then(fitted => {
-        if (fitted) initiallyFitted.current = true;
+        if (fitted) {
+          initiallyFitted.current = true;
+          onViewportChange?.(viewport);
+          requestAnimationFrame(() => requestAnimationFrame(() => {
+            if (readiness.current.active) readiness.current.onReady?.();
+          }));
+        }
       });
     }, 150);
     return () => window.clearTimeout(timer);
-  }, [fitKey, viewportWidth, viewportHeight, flow, flow.viewportInitialized]);
+  }, [active, fitKey, viewportWidth, viewportHeight, flow, flow.viewportInitialized]);
   const group = plannerGroupNode(graph);
   const displayNodes: Node[] = group ? [{ ...group, data: { ...group.data,
     measureHeader,
@@ -163,12 +178,12 @@ export function PlannerPreview({ graph, onChange, machineLimits }: { graph: Plan
       event.preventDefault(); event.stopPropagation();
       setMenu({ x: event.clientX, y: event.clientY, targets });
     }}>
-      <ReactFlow nodes={displayNodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes}
+      <ReactFlow defaultViewport={initialViewport} onMoveEnd={(_, viewport) => onViewportChange?.(viewport)} nodes={displayNodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes}
         noWheelClassName={wheelBoundary}
         onNodesChange={changes => onChange({ ...graph, nodes: applyNodeChanges<PlannedNode>(changes.filter(change => change.type !== "add" && change.type !== "replace" && change.id !== "planner-group") as NodeChange<PlannedNode>[], graph.nodes) })}
         minZoom={.001} maxZoom={2}
         nodesConnectable={false} deleteKeyCode={null} colorMode="dark" panOnDrag={[1]}>
-        <GridBackground /><Controls showInteractive={false} />
+        <GridBackground />{graph.nodes.length > 0 && <Controls showInteractive={false} />}
         {branch && <ViewportPortal><PlannerWindow key={`${branch.nodeId}/${branch.slot}`} x={branch.x} y={branch.y} wheelBoundary={wheelBoundary}>
           {error && <p role="alert">{error}</p>}
           <AutoRecipePlanner key={`${branch.nodeId}/${branch.slot}`} embedded initialMachineLimits={machineLimits} initialTarget={branch.item} onClose={() => setBranch(undefined)} onAdd={addition => {

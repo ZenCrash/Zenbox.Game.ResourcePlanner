@@ -42,7 +42,13 @@ export function moveSummaryCalculation(values: SummaryCalculation[], sourceId: s
 
 export const FUEL_EU_OUTPUT_ID = "__fuel_eu__";
 export const NET_FUEL_EU_OUTPUT_ID = "__net_fuel_eu__";
-export const isFuelEnergy = (id: string) => id === FUEL_EU_OUTPUT_ID || id === NET_FUEL_EU_OUTPUT_ID;
+export const NORMALIZED_NET_FUEL_EU_OUTPUT_ID = "__normalized_net_fuel_eu__";
+export const isFuelEnergy = (id: string) => id === FUEL_EU_OUTPUT_ID || id === NET_FUEL_EU_OUTPUT_ID || id === NORMALIZED_NET_FUEL_EU_OUTPUT_ID;
+/** Compare fluid fuels per bucket and packaged fuels per item. */
+export function normalizedNetFuelValue(netEu: number, amount: number, fluid: boolean) {
+  if (!Number.isFinite(netEu) || !Number.isFinite(amount) || amount <= 0) return -Infinity;
+  return netEu / (amount / (fluid ? 1000 : 1));
+}
 export function fuelEnergy(amount: number, euPerUnit: number, productionRate: number, euPerTick: number, net: boolean) {
   if (![amount, euPerUnit, productionRate, euPerTick].every(Number.isFinite) || amount < 0 || euPerUnit <= 0 || productionRate <= 0) return null;
   return amount * (euPerUnit - (net ? euPerTick * 20 / productionRate : 0));

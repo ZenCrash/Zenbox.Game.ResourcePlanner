@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   ReactFlowProvider,
@@ -8,7 +8,6 @@ import {
   type Edge,
 } from "@xyflow/react";
 import {
-  ArrowLeft,
   ChevronLeft,
   ChevronRight,
   Plus,
@@ -29,15 +28,21 @@ import {
 } from "@/lib/model";
 import { machineTiers } from "@/lib/machine-selection";
 import { Inventory } from "./inventory";
-import { ItemSlot } from "./recipe-view";
 import { PlannerFilterDropdown } from "./planner-filter-dropdown";
 import { PlannerPriorityList } from "./planner-priority-list";
-import { defaultPlannerPriorities } from "@/lib/planner-priorities";
+import { defaultPlannerPriorities, prioritiesForTarget } from "@/lib/planner-priorities";
 import { plannerBalance } from "@/lib/planner-balance";
 import { plannerDefaultCalculators } from '@/lib/planner-calculators';
 import { summarizePlanner } from '@/lib/planner-summary';
 import { PlannerCalculatorResults } from './planner-calculator-results';
+import { DiagramLoadingProgress } from "./diagram-loading-progress";
+import { useFuelValues } from "./use-fuel-values";
+import { OverviewZoomOverride, useDisplaySettings } from './display-settings';
 import { PlannerPreview } from "./planner-preview";
+import { PlannerNeededItems, PlannerNeededBans } from './planner-needed-items';
+import { readPlannerResultStream } from '@/lib/planner-result-stream';
+import { defaultPlannerSearchDuration } from '@/lib/planner-search-settings';
+import { useItemFamilies } from './use-item-families';
 import { plannerPositions } from "@/lib/planner-columns";
 import { readPlannerFilters, plannerFiltersKey } from "@/lib/planner-filters";
 
@@ -54,6 +59,22 @@ export type PlannedNode = Node<
 >;
 export type PlannedGraph = { nodes: PlannedNode[]; edges: Edge[]; ignoredItems?: string[]; group?: { title: string; headerHeight?: number; theme?: import('@/lib/group-theme').GroupTheme; calculators?: import('@/lib/summary-rate').SummaryCalculation[]; targetItem?: Item; fuelDefaultsPending?: boolean } };
 const emptyPreviewGraph: PlannedGraph = { nodes: [], edges: [] };
+
+const CachedSuggestionPreview = memo(function CachedSuggestionPreview({ cacheKey, graph, active, machineLimits, onChange, onReady }: {
+  cacheKey: string; graph: PlannedGraph; active: boolean;
+  machineLimits: { allowMultiblocks: boolean; balanceMachines: boolean; maxTier: number; maxTotalEu?: number };
+  onChange: (key: string, graph: PlannedGraph) => void;
+  onReady: (key: string) => void;
+}) {
+  const ready = useCallback(() => onReady(cacheKey), [cacheKey, onReady]);
+  const update = useCallback((next: PlannedGraph) => onChange(cacheKey, next), [cacheKey, onChange]);
+  // React Flow nodes set visibility: visible themselves. Hide the entire layer
+  // with opacity while retaining its dimensions and cached viewport.
+  return <div className="planner-cached-preview" aria-hidden={!active} inert={!active}
+    style={{ visibility: active ? 'visible' : 'hidden', opacity: active ? 1 : 0, pointerEvents: active ? 'auto' : 'none' }}>
+    <ReactFlowProvider><PlannerPreview onReady={ready} active={active} graph={graph} machineLimits={machineLimits} onChange={update} /></ReactFlowProvider>
+  </div>;
+});
 
 export function plannerGraph(plan: PlannerPlan): PlannedGraph {
   const balance = plannerBalance(plan);
@@ -106,8 +127,6 @@ export function plannerGraph(plan: PlannerPlan): PlannedGraph {
   return { nodes, edges };
 }
 
-const format = (value: number) =>
-  value.toLocaleString("en-US", { maximumFractionDigits: 4 });
 
 export function AutoRecipePlanner({
   onClose,
@@ -118,45 +137,77 @@ export function AutoRecipePlanner({
 }: {
   embedded?: boolean;
   initialTarget?: Item;
-  initialMachineLimits?: { allowMultiblocks: boolean; maxTier: number };
+  initialMachineLimits?: { allowMultiblocks: boolean; maxTier: number; maxTotalEu?: number; balanceMachines?: boolean };
   onClose: () => void;
-  onAdd: (graph: PlannedGraph) => void;
+  onAdd: (graph: PlannedGraph, keepOpen?: boolean) => void;
 }) {
   // An inline planner lives inside another flow's transformed viewport. Cancel
   // that transform's scale for its own canvas: React Flow measures handles in
   // screen pixels and only divides by its own viewport zoom.
   const parentZoom = useStore((state) => embedded ? state.transform[2] : 1);
+  const { settings } = useDisplaySettings();
+  const [overviewZoom, setOverviewZoom] = useState<number>();
+  const previewOverviewZoom = overviewZoom ?? settings.overviewZoom;
   const [saved] = useState(readPlannerFilters);
   const [target, setTarget] = useState<Item | undefined>(initialTarget ?? saved.target);
   const [inputs, setInputs] = useState<Item[]>(saved.inputs ?? (saved.input ? [saved.input] : []));
   const [picker, setPicker] = useState<"target" | "input" | null>(null);
-  const [priorities, setPriorities] = useState(saved.priorities ?? defaultPlannerPriorities(saved.priority));
+  const [priorityOrder, setPriorities] = useState(saved.priorities ?? defaultPlannerPriorities(saved.priority));
+  const targetFuelValues = useFuelValues(target ? [target.id] : []);
+  const priorities = useMemo(() => prioritiesForTarget(priorityOrder, !!target && !!targetFuelValues[target.id]), [priorityOrder, target?.id, targetFuelValues]);
   const [allowMultiblocks, setAllowMultiblocks] = useState(
     initialMachineLimits?.allowMultiblocks ?? saved.allowMultiblocks,
   );
   const [maxTier, setMaxTier] = useState(initialMachineLimits?.maxTier ?? saved.maxTier);
+  const [maxTotalEu, setMaxTotalEu] = useState(initialMachineLimits ? String(initialMachineLimits.maxTotalEu ?? '') : saved.maxTotalEu);
+  const [balanceMachines, setBalanceMachines] = useState(initialMachineLimits?.balanceMachines ?? saved.balanceMachines);
+  const [editingMaxTotalEu, setEditingMaxTotalEu] = useState(false);
   const [maxSteps, setMaxSteps] = useState(saved.maxSteps);
   const [maxSuggestions, setMaxSuggestions] = useState(saved.maxSuggestions);
+  const searchDurationSeconds = defaultPlannerSearchDuration;
   const [bannedMachineIds, setBannedMachineIds] = useState(
     saved.bannedMachineIds,
   );
   const [recipeTypes, setRecipeTypes] = useState(saved.recipeTypes);
+  const [bannedNeededItems, setBannedNeededItems] = useState<Item[]>(saved.bannedNeededItems);
+  const [bannedNeededOreGroups, setBannedNeededOreGroups] = useState<Record<string, string[]>>(saved.bannedNeededOreGroups);
+  const [appliedNeededItemIds, setAppliedNeededItemIds] = useState<string[]>([]);
+  const bannedNeededItemIds = bannedNeededItems.map(item => item.id);
   const [filterChoices, setFilterChoices] = useState<{
     machines: Item[];
     recipeTypes: string[];
   }>();
   const [filterError, setFilterError] = useState("");
   const [filterAttempt, setFilterAttempt] = useState(0);
-  const [excludedRecipes, setExcludedRecipes] = useState<string[]>([]);
+  const [excludedRecipes] = useState<string[]>([]);
   const [excludedPlans, setExcludedPlans] = useState<string[]>([]);
   const [result, setResult] = useState<PlannerResult>();
   const [page, setPage] = useState(0);
   const [busy, setBusy] = useState(false);
+  const [searchStartedAt, setSearchStartedAt] = useState<number | null>(null);
+  const [searchElapsedSeconds, setSearchElapsedSeconds] = useState(0);
+  const [suggestionsFound, setSuggestionsFound] = useState(0);
+  const partialSearchResult = useRef<PlannerResult>({ plans: [], examined: 0, limited: true });
+  const searchedBanIds = useRef<string[]>([]);
+  useEffect(() => {
+    if (!busy || searchStartedAt === null) return;
+    const timer = window.setInterval(() => setSearchElapsedSeconds(Math.floor((performance.now() - searchStartedAt) / 1000)), 250);
+    return () => window.clearInterval(timer);
+  }, [busy, searchStartedAt]);
   const [error, setError] = useState("");
   const controller = useRef<AbortController | null>(null);
   const plan = result?.plans[page];
+  const suggestionKey = plan ? JSON.stringify([target?.id, embedded, plan.key, plan.balanceMachines,
+    plan.steps.map(step => [step.machineId, step.cycles, step.multiblock])]) : undefined;
+  const [readySuggestionKey, setReadySuggestionKey] = useState<string>();
+  const activeSuggestion = useRef(suggestionKey);
+  activeSuggestion.current = suggestionKey;
+  const previewReady = useCallback((key: string) => { if (activeSuggestion.current === key) setReadySuggestionKey(key); }, []);
+  const [suggestionGraphs, setSuggestionGraphs] = useState<Record<string, PlannedGraph>>({});
+
   const baseGraph = useMemo(() => {
     if (!plan) return undefined;
+    if (suggestionKey && suggestionGraphs[suggestionKey]) return suggestionGraphs[suggestionKey];
     const graph = plannerGraph(plan);
     if (!embedded && plan.steps.length > 1) {
       const targetItem = plan.steps.flatMap(step => step.recipe.ingredients).find(i => i.direction === 'output' && i.itemId === (plan.targetOutputId ?? target?.id))?.item;
@@ -164,13 +215,27 @@ export function AutoRecipePlanner({
         calculators: targetItem ? plannerDefaultCalculators(targetItem, false) : [], fuelDefaultsPending: true };
     }
     return graph;
-  }, [plan, embedded, target?.name]);
-  const [edited, setEdited] = useState<{ base: PlannedGraph; graph: PlannedGraph }>();
-  const graph = edited && edited.base === baseGraph ? edited.graph : baseGraph;
-  const calculatorSummary = useMemo(() => graph?.group ? summarizePlanner(graph) : undefined, [graph]);
-  const modified = !!graph && !!baseGraph && (graph.nodes.length !== baseGraph.nodes.length || graph.edges.length !== baseGraph.edges.length || graph.nodes.some((node, i) => node.data !== baseGraph.nodes[i]?.data));
+  }, [plan, embedded, target?.name, suggestionKey, suggestionGraphs]);
+  const graph = (suggestionKey ? suggestionGraphs[suggestionKey] : undefined) ?? baseGraph;
+  const updateCachedGraph = useCallback((key: string, next: PlannedGraph) => {
+    setSuggestionGraphs(current => current[key] === next ? current : { ...current, [key]: next });
+  }, []);
+  const cacheGraph = (next: PlannedGraph) => { if (suggestionKey) updateCachedGraph(suggestionKey, next); };
+  const previewLimits = useMemo(() => ({ allowMultiblocks, balanceMachines, maxTier,
+    maxTotalEu: maxTotalEu.trim() === '' ? undefined : Number(maxTotalEu) }), [allowMultiblocks, balanceMachines, maxTier, maxTotalEu]);
+  useEffect(() => {
+    if (suggestionKey && baseGraph && !suggestionGraphs[suggestionKey]) updateCachedGraph(suggestionKey, baseGraph);
+  }, [suggestionKey, baseGraph, suggestionGraphs, updateCachedGraph]);
+  const calculatorSummary = useMemo(() => graph ? summarizePlanner(graph) : undefined, [graph]);
+  const { families, items: familyItems } = useItemFamilies([...inputs.map(item => item.id), ...bannedNeededItemIds, ...(calculatorSummary?.inputs.map(flow => flow.item.id) ?? [])]);
+  const protectedInputIds = new Set(inputs.flatMap(item => families[item.id] ?? [item.id]));
+  useEffect(() => {
+    setBannedNeededItems(current => current.some(item => protectedInputIds.has(item.id))
+      ? current.filter(item => !protectedInputIds.has(item.id)) : current);
+  }, [families, inputs]);
   const valid =
     !!target?.id &&
+    (maxTotalEu.trim() === '' || (Number.isFinite(Number(maxTotalEu)) && Number(maxTotalEu) >= 0)) &&
     !inputs.some(input => input.id === target.id) &&
     [Number(maxSteps), Number(maxSuggestions)].every(
       (value) => Number.isInteger(value) && value >= 1 && value <= 100,
@@ -186,10 +251,15 @@ export function AutoRecipePlanner({
           inputs,
           priorities,
           allowMultiblocks,
+          balanceMachines,
           maxTier,
+          maxTotalEu,
           maxSteps,
           maxSuggestions,
+          searchDurationSeconds,
           bannedMachineIds,
+          bannedNeededItems,
+          bannedNeededOreGroups,
           recipeTypes,
         }),
       );
@@ -200,10 +270,15 @@ export function AutoRecipePlanner({
     inputs,
     priorities,
     allowMultiblocks,
+    balanceMachines,
     maxTier,
+    maxTotalEu,
     maxSteps,
     maxSuggestions,
+    searchDurationSeconds,
     bannedMachineIds,
+    bannedNeededItems,
+    bannedNeededOreGroups,
     recipeTypes,
   ]);
   useEffect(() => {
@@ -232,6 +307,13 @@ export function AutoRecipePlanner({
     setPage(0);
     setError("");
   };
+  const stopSearch = (stopReason: 'cancelled' | 'timeout') => {
+    controller.current?.abort();
+    setBusy(false);
+    setResult({ ...partialSearchResult.current, limited: true, stopReason });
+    setAppliedNeededItemIds(searchedBanIds.current);
+    setPage(0);
+  };
   async function search(
     recipeExclusions = excludedRecipes,
     planExclusions = excludedPlans,
@@ -241,6 +323,10 @@ export function AutoRecipePlanner({
     const current = new AbortController();
     controller.current = current;
     setBusy(true);
+    setSearchStartedAt(performance.now());
+    setSearchElapsedSeconds(0);
+    setSuggestionsFound(0);
+    partialSearchResult.current = { plans: [], examined: 0, limited: true };
     setError("");
     setResult(undefined);
     setPage(0);
@@ -251,35 +337,61 @@ export function AutoRecipePlanner({
       priority: "eu",
       priorities,
       allowMultiblocks,
+      balanceMachines,
       maxTier,
+      maxTotalEu: maxTotalEu.trim() === '' ? undefined : Number(maxTotalEu),
       maxSteps: Number(maxSteps),
       maxSuggestions: Number(maxSuggestions),
+      searchDurationSeconds,
       excludedRecipes: recipeExclusions,
       excludedPlans: planExclusions,
       bannedMachineIds,
+      bannedNeededItemIds: bannedNeededItems.map(item => item.id),
       recipeTypes,
     };
+    searchedBanIds.current = options.bannedNeededItemIds ?? [];
+    const deadlineTimer = window.setTimeout(() => {
+      if (controller.current === current && !current.signal.aborted) stopSearch('timeout');
+    }, searchDurationSeconds * 1000);
     try {
       const response = await fetch("/api/auto-planner", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "Accept": "application/x-ndjson" },
         body: JSON.stringify(options),
         signal: current.signal,
       });
-      const data = await response.json();
-      if (!response.ok)
-        throw new Error(data.error || "Could not search recipes.");
-      if (!current.signal.aborted) setResult(data);
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Could not search recipes.');
+      }
+      const data = await readPlannerResultStream(response, progress => {
+        if (current.signal.aborted || controller.current !== current) return;
+        partialSearchResult.current = progress;
+        setSuggestionsFound(progress.plans.length);
+      });
+      if (!current.signal.aborted) {
+        setResult(data);
+        setAppliedNeededItemIds(options.bannedNeededItemIds ?? []);
+      }
     } catch (error) {
       if (!current.signal.aborted) setError((error as Error).message);
     } finally {
+      window.clearTimeout(deadlineTimer);
       if (!current.signal.aborted) setBusy(false);
     }
   }
+  const changeNeededBans = (items: Item[]) => {
+    const remaining = new Set(items.map(item => item.id));
+    setBannedNeededOreGroups(current => Object.fromEntries(Object.entries(current).map(([name, ids]) => [name, ids.filter(id => remaining.has(id))] as const).filter(([, ids]) => ids.length > 0)));
+    setBannedNeededItems([...new Map(items.filter(item => !protectedInputIds.has(item.id)).map(item => [item.id, item])).values()]);
+  };
   const choose = (item: Item) => {
     invalidate();
     if (picker === "target") setTarget(item);
-    else setInputs(current => current.some(input => input.id === item.id) ? current : [...current, item]);
+    else {
+      setInputs(current => current.some(input => input.id === item.id) ? current : [...current, item]);
+      setBannedNeededItems(current => current.filter(banned => !(families[item.id] ?? [item.id]).includes(banned.id)));
+    }
     setPicker(null);
   };
   return (
@@ -299,14 +411,6 @@ export function AutoRecipePlanner({
         }}
       >
         <div className="recipe-browser-heading item-picker-heading">
-          <button
-            type="button"
-            aria-label="Back to planner"
-            disabled={!picker}
-            onClick={() => setPicker(null)}
-          >
-            <ArrowLeft size={17} />
-          </button>
           <div className="recipe-view">
             <h2 className="recipe-title">
               <span className="item-slot">
@@ -375,9 +479,7 @@ export function AutoRecipePlanner({
                   <Search size={16} />
                 </button>
               </label>
-              <h3>Search options</h3>
-              <PlannerPriorityList values={priorities} hasInputs={inputs.length > 0}
-                onChange={values => { invalidate(); setPriorities(values); }} />
+              <h3>Recipes / machines</h3>
               <PlannerFilterDropdown
                   label="Maximum machine tier"
                   emptyLabel="Choose tier"
@@ -389,47 +491,16 @@ export function AutoRecipePlanner({
                     setMaxTier(Number(value));
                   }}
               />
-              <label>
-                <span>Maximum recipe steps</span>
-                <input
-                  type="number"
-                  min={1}
-                  max={100}
-                  step={1}
-                  value={maxSteps}
-                  onChange={(event) => {
-                    invalidate();
-                    setMaxSteps(event.target.value);
-                  }}
-                />
+              <label title="Maximum operating EU required to produce one target item or 1,000 mB of target fluid, using the selected machine ratios. Leave blank for no limit.">
+                <span>Max total EU per item / 1000 mB</span>
+                <span className="planner-eu-input">
+                  <input type={editingMaxTotalEu ? 'number' : 'text'} inputMode="decimal" min={0} step="any" placeholder="No limit" aria-label="Max total EU per item / 1000 mB"
+                    value={editingMaxTotalEu || maxTotalEu.trim() === '' ? maxTotalEu : Number(maxTotalEu).toLocaleString('de-DE', { maximumSignificantDigits: 21 })}
+                    onFocus={() => setEditingMaxTotalEu(true)} onBlur={() => setEditingMaxTotalEu(false)}
+                    onChange={event => { invalidate(); setMaxTotalEu(event.target.value); }} />
+                  <span aria-hidden="true">EU</span>
+                </span>
               </label>
-              <label>
-                <span>Maximum suggestions</span>
-                <input
-                  type="number"
-                  min={1}
-                  max={100}
-                  step={1}
-                  value={maxSuggestions}
-                  onChange={(event) => {
-                    invalidate();
-                    setMaxSuggestions(event.target.value);
-                  }}
-                />
-              </label>
-              <label className="planner-checkbox settings-switch-row">
-                <span>Allow multiblock structures</span>
-                <input
-                  type="checkbox"
-                  role="switch"
-                  checked={allowMultiblocks}
-                  onChange={(event) => {
-                    invalidate();
-                    setAllowMultiblocks(event.target.checked);
-                  }}
-                />
-              </label>
-              <h3>Filters</h3>
               <PlannerFilterDropdown
                 label="Banned machines"
                 emptyLabel="No machines banned"
@@ -459,6 +530,55 @@ export function AutoRecipePlanner({
                   setRecipeTypes(ids);
                 }}
               />
+              <label className="planner-checkbox settings-switch-row">
+                <span>Allow multiblock structures</span>
+                <input
+                  type="checkbox"
+                  role="switch"
+                  checked={allowMultiblocks}
+                  onChange={(event) => {
+                    invalidate();
+                    setAllowMultiblocks(event.target.checked);
+                  }}
+                />
+              </label>
+              <label className="planner-checkbox settings-switch-row" title="Balance recipe machine counts before comparison. Turn off to compare one machine per recipe; inputs may then be partially supplied.">
+                <span>Balance machine ratios</span>
+                <input type="checkbox" role="switch" checked={balanceMachines} onChange={event => { invalidate(); setBalanceMachines(event.target.checked); }} />
+              </label>
+              <h3>Search options</h3>
+              <PlannerPriorityList values={priorities} hasInputs={inputs.length > 0}
+                onChange={values => { invalidate(); setPriorities(values); }} />
+              <label>
+                <span>Maximum recipe steps</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={100}
+                  step={1}
+                  value={maxSteps}
+                  onChange={(event) => {
+                    invalidate();
+                    setMaxSteps(event.target.value);
+                  }}
+                />
+              </label>
+              <label>
+                <span>Maximum suggestions</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={100}
+                  step={1}
+                  value={maxSuggestions}
+                  onChange={(event) => {
+                    invalidate();
+                    const value = event.target.value;
+                    setMaxSuggestions(value === '' ? '' : String(Math.max(1, Math.min(100, Math.trunc(Number(value)) || 1))));
+                  }}
+                  onBlur={() => { if (!maxSuggestions) setMaxSuggestions('1'); }}
+                />
+              </label>
               {filterError && (
                 <div role="alert">
                   {filterError}
@@ -470,82 +590,43 @@ export function AutoRecipePlanner({
                   </button>
                 </div>
               )}
-              <button type="submit" disabled={!valid || busy}>
+              <button type="submit" className="primary" disabled={!valid || busy}>
                 <Search size={16} />
-                {busy ? "Searching…" : "Find suggestions"}
+                {busy ? `Searching…${searchElapsedSeconds >= 5 ? ` ${Math.floor(searchElapsedSeconds / 60)}:${String(searchElapsedSeconds % 60).padStart(2, '0')} · ${suggestionsFound} suggestions found` : ''}` : "Find suggestions"}
               </button>
               {busy && (
-                <button type="button" onClick={invalidate}>
+                <button type="button" onClick={() => stopSearch('cancelled')}>
                   Cancel search
                 </button>
               )}
 
-            {plan && graph && (
-              <>
-                <div className="planner-step-list">
-                  {graph.nodes.map(({ data: step }, index) => (
-                    <span key={`${step.recipe.id}-${index}`}>
-                      {index + 1}. {step.recipe.handler}
-                      <button
-                        type="button"
-                        title="Exclude this recipe from all suggestions until this popup closes"
-                        aria-label={`Disregard ${step.recipe.handler} recipe at step ${index + 1}`}
-                        onClick={() => {
-                          const next = [...excludedRecipes, step.recipe.id];
-                          setExcludedRecipes(next);
-                          void search(next, excludedPlans);
-                        }}
-                      >
-                        <Ban size={14} />
-                      </button>
-                    </span>
-                  ))}
-                </div>
-                {!modified && plan.supplies.length > 0 && (
-                  <details>
-                    <summary>
-                      Other required inputs per target ({plan.supplies.length})
-                    </summary>
-                    <div className="planner-supplies">
-                      {plan.supplies.map(({ item, amount }) => (
-                        <span key={item.id}>
-                          <ItemSlot item={item} />
-                          {format(amount)} {item.kind === "fluid" ? "L" : "×"}{" "}
-                          {item.name.replace(/§./g, "")}
-                        </span>
-                      ))}
-                    </div>
-                  </details>
-                )}
-              </>
-            )}
-            {(excludedRecipes.length > 0 || excludedPlans.length > 0) && (
-              <small>
-                {excludedRecipes.length} recipes and {excludedPlans.length}{" "}
-                suggestions disregarded until this popup closes.
-              </small>
-            )}
             </form>
             <div className="planner-main">
             {error && <p role="alert">{error}</p>}
             {result?.limited && (
               <p className="planner-notice" role="status">
-                Search limit reached. These are the best routes found, not a
-                guaranteed global optimum. Narrow the inputs or step limit to
-                search more thoroughly.
+                {result.stopReason === 'cancelled'
+                  ? `Search cancelled. ${result.plans.length} suggestions found.`
+                  : result.stopReason === 'timeout'
+                  ? `Max search duration reached. ${result.plans.length} suggestions found.`
+                  : result.plans.length
+                  ? 'Search limit reached. Showing the routes found so far; other valid routes may exist.'
+                  : 'Search limit reached before a matching route was found. This does not mean no valid route exists.'}
               </p>
             )}
-            {result && !plan && (
+            {result && !plan && !result.limited && (
               <p role="status">
                 No matching routes found within these limits. Try another input,
                 tier, or step limit.
               </p>
             )}
+            {!plan && bannedNeededItems.length > 0 && <PlannerNeededBans oreGroups={bannedNeededOreGroups} familyItems={familyItems} inputItemIds={[...protectedInputIds]} onAddVariants={ids => changeNeededBans([...bannedNeededItems, ...ids.flatMap(id => familyItems[id] ? [familyItems[id]] : [])])} onRemoveGroup={ids => changeNeededBans(bannedNeededItems.filter(item => !ids.includes(item.id)))} onClear={() => changeNeededBans([])} families={families} items={bannedNeededItems} appliedItemIds={appliedNeededItemIds} onRemove={id => changeNeededBans(bannedNeededItems.filter(item => item.id !== id))} />}
             {plan && graph && (
               <>
                 <div className="planner-results-toolbar">
                   <button
                     type="button"
+                    className="primary"
                     aria-label="Previous suggestion"
                     disabled={result!.plans.length < 2}
                     onClick={() =>
@@ -562,20 +643,14 @@ export function AutoRecipePlanner({
                   </span>
                   <button
                     type="button"
+                    className="primary"
                     aria-label="Next suggestion"
                     disabled={result!.plans.length < 2}
                     onClick={() => setPage((page + 1) % result!.plans.length)}
                   >
                     <ChevronRight size={18} />
                   </button>
-                  {!modified && <strong>{format(plan.totalEu)} EU / target</strong>}
-                  {inputs.length > 0 && !modified && (
-                    <span>{format(1 / plan.inputAmount)} target / {inputs.length > 1 ? "combined input unit" : "input"}</span>
-                  )}
-                  <span>
-                    {graph.nodes.length}{" "}
-                    {graph.nodes.length === 1 ? "step" : "steps"}
-                  </span>
+                  <PlannerNeededBans oreGroups={bannedNeededOreGroups} familyItems={familyItems} inputItemIds={[...protectedInputIds]} onAddVariants={ids => changeNeededBans([...bannedNeededItems, ...ids.flatMap(id => familyItems[id] ? [familyItems[id]] : [])])} onRemoveGroup={ids => changeNeededBans(bannedNeededItems.filter(item => !ids.includes(item.id)))} onClear={() => changeNeededBans([])} families={families} items={bannedNeededItems} appliedItemIds={appliedNeededItemIds} onRemove={id => changeNeededBans(bannedNeededItems.filter(item => item.id !== id))} />
                   <button
                     type="button"
                     onClick={() => {
@@ -590,22 +665,39 @@ export function AutoRecipePlanner({
                 </div>
               </>
             )}
-            {!embedded && calculatorSummary && !!graph?.group?.calculators?.length && <PlannerCalculatorResults summary={calculatorSummary} calculators={graph.group.calculators} />}
-            <div className={`planner-preview${embedded ? " planner-preview-embedded" : ""}`} style={{ zoom: 1 / parentZoom, width: "100%" }}>
-              <ReactFlowProvider key={plan?.key ?? "empty-preview"}>
-                <PlannerPreview machineLimits={{ allowMultiblocks, maxTier }} graph={graph ?? emptyPreviewGraph} onChange={(next) => {
-                  if (baseGraph) setEdited({ base: baseGraph, graph: next });
-                }} />
-              </ReactFlowProvider>
+            <div className={`planner-preview${embedded ? " planner-preview-embedded" : ""}${calculatorSummary?.inputs.some(flow => !calculatorSummary.recursiveInputIds.includes(flow.item.id) && !bannedNeededItemIds.includes(flow.item.id)) ? " planner-has-needed" : ""}`} style={{ zoom: 1 / parentZoom, width: "100%" }}>
+              <OverviewZoomOverride value={previewOverviewZoom}>
+              {calculatorSummary && <PlannerNeededItems onBanOreGroup={(items, groups) => { changeNeededBans([...bannedNeededItems, ...items]); setBannedNeededOreGroups(current => ({ ...current, ...groups })); }} summary={calculatorSummary} hiddenItemIds={bannedNeededItemIds} inputItemIds={[...protectedInputIds]} families={families} inputsReady={inputs.every(item => !!families[item.id])} onBanAll={item => changeNeededBans([...bannedNeededItems, ...(families[item.id] ?? []).flatMap(id => familyItems[id] ? [familyItems[id]] : [])])} onBan={item => changeNeededBans([...bannedNeededItems.filter(value => value.id !== item.id), item])} />}
+              {!embedded && calculatorSummary && !!graph?.group?.calculators?.length && <PlannerCalculatorResults summary={calculatorSummary} calculators={graph.group.calculators} />}
+              {Object.entries(suggestionKey && graph ? { ...suggestionGraphs, [suggestionKey]: graph } : suggestionGraphs).map(([key, cachedGraph]) =>
+                <CachedSuggestionPreview key={key} cacheKey={key} graph={cachedGraph} active={key === suggestionKey}
+                  machineLimits={previewLimits} onChange={updateCachedGraph} onReady={previewReady} />)}
+              {suggestionKey && readySuggestionKey !== suggestionKey && <div className="planner-loading-overlay" aria-busy="true" onClick={event => event.stopPropagation()}>
+                <section className="dialog diagram-loading-dialog" role="status" aria-label="Loading suggestion">
+                  <h2>Loading suggestion</h2>
+                  <p>Preparing diagram…</p>
+                  <DiagramLoadingProgress key={suggestionKey} />
+                </section>
+              </div>}
+              {!suggestionKey && <ReactFlowProvider><PlannerPreview graph={emptyPreviewGraph} machineLimits={previewLimits} onChange={() => {}} /></ReactFlowProvider>}
+              </OverviewZoomOverride>
+              {!embedded && !!graph?.nodes.length && <label className="planner-overview-slider nodrag nopan nowheel" title="Show the zoomed-out view below this zoom level">
+                <span>Zoomed-out view</span>
+                <input type="range" min={0} max={100} step={5} value={Math.round(previewOverviewZoom * 100)}
+                  aria-label="Zoomed-out view threshold" onChange={event => setOverviewZoom(Number(event.target.value) / 100)} />
+                <span>{Math.round(previewOverviewZoom * 100)}%</span>
+              </label>}
             </div>
-            {plan && graph && <div className="planner-preview-actions">
-              {!embedded && graph.group && <button type="button" onClick={() => {
-                if (baseGraph) setEdited({ base: baseGraph, graph: { ...graph, group: undefined } });
+            <div className="planner-preview-actions">
+              {!embedded && graph?.group && <button type="button" className="primary" onClick={() => {
+                cacheGraph({ ...graph, group: undefined });
               }}><X size={16} />Remove group</button>}
-              <button type="button" onClick={() => onAdd(graph)}>
+              <button type="button" className="primary" disabled={!plan || !graph?.nodes.length || busy} onClick={() => { if (graph) onAdd(graph); }}>
                 <Plus size={16} />{embedded ? "Confirm branch" : "Add to diagram"}
               </button>
-            </div>}
+              {!embedded && <button type="button" className="primary" aria-label="Add to diagram and keep wizard open" title="Add to diagram and keep wizard open"
+                disabled={!plan || !graph?.nodes.length || busy} onClick={() => { if (graph) onAdd(graph, true); }}><Plus size={16} /></button>}
+            </div>
             </div>
           </div>
       </section>

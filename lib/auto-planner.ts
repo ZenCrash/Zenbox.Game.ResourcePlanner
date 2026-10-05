@@ -1,6 +1,7 @@
 import {
   ingredientVariants,
   applyVariants,
+  hasRecipeTiming,
   type Item,
   type Recipe,
   type VariantSelection,
@@ -13,7 +14,17 @@ import type { PlannerPriority } from "./planner-priorities";
 import type { MultiblockConfig } from "./multiblock";
 import { multiblockProfile } from "./multiblock";
 import { plannerMachineConfigurations } from "./planner-machine-options";
+import { plannerNormalizedTotalEu, plannerComparisonSummary } from './planner-balance';
+import { normalizedNetFuelValue } from './summary-rate';
+import { PriorityQueue } from './priority-queue';
 import { knownPlannerMultiblock, plannerControllerAllowed } from './planner-progression';
+
+let lastSearchYield = 0;
+async function yieldSearchWork() {
+  if (Date.now() - lastSearchYield < 8) return;
+  await new Promise(resolve => setTimeout(resolve, 0));
+  lastSearchYield = Date.now();
+}
 
 export function plannerHandlerAllowed(handler: string) {
   return !["Combustion Generator Fuels", "Semifluid Generator Fuels", "Gas Turbine Fuel", "Gas Turbine Fuels", "Large Boiler"].includes(canonicalRecipeHandler(handler));
@@ -28,12 +39,17 @@ export type PlannerOptions = {
   priorities?: PlannerPriority[];
   allowMultiblocks: boolean;
   maxTier: number;
+  maxTotalEu?: number;
+  balanceMachines?: boolean;
+  fuelEuPerUnit?: Record<string, number>;
   maxSteps: number;
   maxSuggestions: number;
+  searchDurationSeconds?: number;
   excludedRecipes: string[];
   excludedPlans: string[];
   nearInputIds?: string[];
   bannedMachineIds?: string[];
+  bannedNeededItemIds?: string[];
   recipeTypes?: string[];
   targetAmounts?: Record<string, number>;
   inputFactors?: Record<string, number>;
@@ -50,6 +66,7 @@ export type PlannerStep = {
   recovery?: boolean;
 };
 export type PlannerPlan = {
+  balanceMachines?: boolean;
   targetOutputId?: string;
   key: string;
   steps: PlannerStep[];
@@ -65,6 +82,7 @@ export type PlannerPlan = {
   }[];
 };
 export type PlannerResult = {
+  stopReason?: 'cancelled' | 'timeout';
   plans: PlannerPlan[];
   limited: boolean;
   examined: number;
@@ -151,6 +169,28 @@ function stepIngredients(step: PlannerStep) {
   return overclockRecipe(applyVariants(step.recipe, step.variants), step.machineId, step.multiblock).ingredients;
 }
 
+/** Banned materials must have a producer that can start without importing a
+ * banned material. Merely occurring as an output in a recycling loop is not
+ * enough. Partial supply is allowed once its producer is reachable. */
+export function plannerStartupMaterials(plan: PlannerPlan, banned: ReadonlySet<string>) {
+  const available = new Set<string>();
+  const remaining = plan.steps.map(step => ({ step, ingredients: stepIngredients(step) }));
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (let index = remaining.length - 1; index >= 0; index--) {
+      const { step, ingredients } = remaining[index];
+      if (!hasRecipeTiming(step.recipe) || ingredients.some(i => i.direction === 'input' && i.consumed && i.amount > 0 && banned.has(i.itemId) && !available.has(i.itemId))) continue;
+      for (const output of ingredients)
+        if (output.direction === 'output' && output.amount * output.chance > 0) available.add(output.itemId);
+      remaining.splice(index, 1);
+      changed = true;
+    }
+  }
+  const missing = new Set(plan.steps.flatMap(step => stepIngredients(step).filter(i => i.direction === 'input' && i.consumed && i.amount > 0 && banned.has(i.itemId) && !available.has(i.itemId)).map(i => i.itemId)));
+  return { available, missing };
+}
+
 /** Filling/draining carries the contents, not the empty packaging. Following
  * the empty bucket output can otherwise turn any bottled fluid into any other
  * one by buying the desired fluid externally and reusing the bucket.
@@ -181,7 +221,8 @@ export function plannerConversionInputs(
   return [];
 }
 
-function isContainerFilling(recipe: Recipe) {
+function isContainerConversion(recipe: Recipe) {
+  if (recipe.handler === 'Fluid Canner' || recipe.handler === 'Bottler') return true;
   const inputs = recipe.ingredients.filter(i => i.direction === "input" && i.consumed && i.amount > 0);
   const outputs = recipe.ingredients.filter(i => i.direction === "output" && i.amount > 0);
   const fluids = inputs.filter(i => i.item.kind === "fluid");
@@ -203,6 +244,8 @@ async function findRoutes(
   recipesFor: (itemId: string) => Promise<Recipe[]>,
   interrupted: () => boolean = () => false,
   budget = 5000,
+  allowExternalInputs = false,
+  machineCache = new Map<Recipe, ReturnType<typeof plannerMachine>>(),
 ): Promise<PlannerResult> {
   type State = {
     itemId: string;
@@ -215,9 +258,15 @@ async function findRoutes(
     options.inputFactors ?? Object.fromEntries((options.inputIds ?? (options.inputId ? [options.inputId] : [])).map(id => [id, 1]));
   const hasInputs = Object.keys(inputFactors).length > 0;
   const isSource = (id: string) => Object.hasOwn(inputFactors, id);
-  const queue: State[] = Object.entries(
+  const queue = new PriorityQueue<State>((a, b) =>
+    Number(a.steps.length > 0) - Number(b.steps.length > 0) ||
+    Number(options.nearInputIds?.includes(b.itemId) ?? false) - Number(options.nearInputIds?.includes(a.itemId) ?? false) ||
+    ((options.priorities?.[0] ?? options.priority) === 'eu'
+      ? a.eu - b.eu || a.steps.length - b.steps.length
+      : a.steps.length - b.steps.length || a.amount - b.amount));
+  Object.entries(
     options.exactTarget ? { [options.targetId]: 1 } : options.targetAmounts ?? { [options.targetId]: 1 },
-  ).map(([itemId, amount]) => ({
+  ).forEach(([itemId, amount]) => queue.push({
     itemId,
     amount,
     steps: [],
@@ -226,15 +275,14 @@ async function findRoutes(
   }));
   const found = new Map<string, PlannerPlan>();
   const cache = new Map<string, Promise<Recipe[]>>();
-  const machineCache = new Map<Recipe, ReturnType<typeof plannerMachine>>();
   const excluded = new Set(options.excludedRecipes);
   let examined = 0;
   let limited = false;
   const finish = (state: State) => {
     const steps = state.steps.toReversed();
-    // Filling may finish a production route, but must not be its starting
+    // Container conversions may finish a production route, but cannot start
     // operation. This also covers standalone and nested ingredient searches.
-    if (steps[0] && isContainerFilling(steps[0].recipe)) return;
+    if (steps[0] && isContainerConversion(steps[0].recipe)) return;
     const key = steps
       .map(
         (step) =>
@@ -279,13 +327,14 @@ async function findRoutes(
     }));
     found.set(key, {
       key,
+      balanceMachines: options.balanceMachines !== false,
       targetOutputId: state.steps[0]?.recipe.ingredients.find(i => i.direction === 'output' && i.slot === state.steps[0].outputSlot)?.itemId,
       steps,
       links,
       totalEu: state.eu,
       outputPerBatch: (overclockRecipe(steps.at(-1)!.recipe, steps.at(-1)!.machineId, steps.at(-1)!.multiblock).parallel ?? 1) / steps.at(-1)!.cycles,
       inputAmount:
-        state.amount * (inputFactors[state.itemId] ?? 1) + extraSource,
+        state.amount * (inputFactors[state.itemId] ?? (hasInputs ? 0 : 1)) + extraSource,
       supplies: [...supplies.values()],
     });
   };
@@ -296,16 +345,6 @@ async function findRoutes(
     }
     // EU is a nonnegative lower bound. Yield paths are explored by depth to avoid
     // repeatedly following a locally attractive recycling chain.
-    queue.sort(
-      (a, b) =>
-        // Examine every target form before spending the budget on deeper routes.
-        Number(a.steps.length > 0) - Number(b.steps.length > 0) ||
-        Number(options.nearInputIds?.includes(b.itemId) ?? false) -
-          Number(options.nearInputIds?.includes(a.itemId) ?? false) ||
-        ((options.priorities?.[0] ?? options.priority) === "eu"
-          ? a.eu - b.eu || a.steps.length - b.steps.length
-          : a.steps.length - b.steps.length || a.amount - b.amount),
-    );
     const state = queue.shift()!;
     if (state.steps.length && isSource(state.itemId)) {
       finish(state);
@@ -321,6 +360,8 @@ async function findRoutes(
     if (!cache.has(state.itemId))
       cache.set(state.itemId, recipesFor(state.itemId));
     for (const recipe of await cache.get(state.itemId)!) {
+      await yieldSearchWork();
+      if (interrupted()) { limited = true; break; }
       if (++examined > budget) {
         limited = true;
         break;
@@ -359,7 +400,7 @@ async function findRoutes(
         outputSlot: outputs[0].slot,
         cycles,
       };
-      if (!hasInputs) {
+      if (!hasInputs || allowExternalInputs) {
         finish({ ...state, steps: [...state.steps, step], eu });
         continue;
       }
@@ -393,13 +434,14 @@ async function findRoutes(
             visited: [...state.visited, state.itemId],
           };
           if (isSource(itemId)) finish(nextState);
-          else queue.push(nextState);
-          if (queue.length >= budget) {
+          else if (queue.length < Math.min(budget, 20000)) queue.push(nextState);
+          else limited = true;
+          if (queue.length >= Math.min(budget, 20000)) {
             limited = true;
             break;
           }
         }
-        if (queue.length >= budget) break;
+        if (queue.length >= Math.min(budget, 20000)) break;
       }
     }
   }
@@ -416,16 +458,52 @@ function compareDependencies(options: PlannerOptions, a: PlannerPlan, b: Planner
   return materials(a) - materials(b) || a.supplies.length - b.supplies.length;
 }
 
+const comparisonCaches = new WeakMap<PlannerOptions, { metrics: WeakMap<PlannerPlan, PlannerPlan>; fuel: WeakMap<PlannerPlan, number>; multiblocks: WeakMap<PlannerPlan, number> }>();
 function comparePlans(options: PlannerOptions, a: PlannerPlan, b: PlannerPlan) {
-  const multiblocks = (plan: PlannerPlan) => plan.steps.filter(step =>
+  let cache = comparisonCaches.get(options);
+  if (!cache) { cache = { metrics: new WeakMap(), fuel: new WeakMap(), multiblocks: new WeakMap() }; comparisonCaches.set(options, cache); }
+  // One-machine mode compares the actual unscaled group rates and energy.
+  // Keep route cycles intact: they are still needed to discover dependencies.
+  const metrics = (plan: PlannerPlan) => {
+    if (options.balanceMachines !== false) return plan;
+    const cached = cache!.metrics.get(plan);
+    if (cached) return cached;
+    const { summary, output } = plannerComparisonSummary(plan, options.targetId);
+    const rate = output?.rate ?? 0;
+    const sources = options.inputFactors ?? Object.fromEntries((options.inputIds ?? (options.inputId ? [options.inputId] : [])).map(id => [id, 1]));
+    const result = { ...plan, totalEu: plannerNormalizedTotalEu(plan, options.targetId),
+      outputPerBatch: rate / (output?.item.kind === 'fluid' ? 1000 : 1),
+      inputAmount: rate > 0 ? summary.inputs.reduce((sum, flow) => sum + flow.rate * (sources[flow.item.id] ?? 0), 0) / rate : Infinity };
+    cache!.metrics.set(plan, result);
+    return result;
+  };
+  a = metrics(a); b = metrics(b);
+  const netFuel = (plan: PlannerPlan) => {
+    const cached = cache!.fuel.get(plan);
+    if (cached !== undefined) return cached;
+    const fuel = options.fuelEuPerUnit?.[plan.targetOutputId ?? options.targetId];
+    if (!fuel) return 0;
+    const { summary, output } = plannerComparisonSummary(plan, options.targetId);
+    const value = output ? normalizedNetFuelValue(output.rate * fuel - summary.euPerTick * 20, output.rate, output.item.kind === 'fluid') : -Infinity;
+    cache!.fuel.set(plan, value);
+    return value;
+  };
+  const multiblocks = (plan: PlannerPlan) => {
+    const cached = cache!.multiblocks.get(plan);
+    if (cached !== undefined) return cached;
+    const value = plan.steps.filter(step =>
     isPlannerMultiblock(step.recipe, selectedMachine(step.recipe, step.machineId)),
   ).length;
+    cache!.multiblocks.set(plan, value);
+    return value;
+  };
   if (options.priorities) {
     const dependencyOrder = compareDependencies(options, a, b);
     if (dependencyOrder) return dependencyOrder;
     const hasInputs = !!(options.inputIds?.length || options.inputId || Object.keys(options.inputFactors ?? {}).length);
     for (const priority of options.priorities) {
       const order = priority === "eu" ? a.totalEu - b.totalEu
+        : priority === 'netFuel' ? netFuel(b) - netFuel(a)
         : priority === "output" ? (b.outputPerBatch ?? 0) - (a.outputPerBatch ?? 0)
         : priority === "yield" ? hasInputs ? a.inputAmount - b.inputAmount : 0
         : multiblocks(a) - multiblocks(b);
@@ -448,6 +526,7 @@ function comparePlans(options: PlannerOptions, a: PlannerPlan, b: PlannerPlan) {
 }
 
 function reuseByproducts(plan: PlannerPlan): PlannerPlan {
+  const spare = spareByproducts(plan);
   const links = [...plan.links];
   const connected = new Set(
     links.map((link) => `${link.target}:${link.targetSlot}`),
@@ -473,7 +552,7 @@ function reuseByproducts(plan: PlannerPlan): PlannerPlan {
         !plan.supplies.some((supply) => supply.item.id === output.itemId)
       )
         continue;
-      let available = output.amount * output.chance * producer.cycles;
+      let available = spare.find(entry => entry.source === source && entry.slot === output.slot)?.amount ?? 0;
       plan.steps.forEach((consumer, target) => {
         if (reaches(target, source)) return;
         for (const input of stepIngredients(consumer)) {
@@ -486,8 +565,9 @@ function reuseByproducts(plan: PlannerPlan): PlannerPlan {
           )
             continue;
           const required = input.amount * consumer.cycles;
-          if (available + 1e-9 < required) continue;
-          available -= required;
+          const supplied = Math.min(available, required);
+          if (supplied <= 1e-9) continue;
+          available -= supplied;
           connected.add(`${target}:${input.slot}`);
           links.push({
             source,
@@ -495,7 +575,7 @@ function reuseByproducts(plan: PlannerPlan): PlannerPlan {
             sourceSlot: output.slot,
             targetSlot: input.slot,
           });
-          reused.set(input.itemId, (reused.get(input.itemId) ?? 0) + required);
+          reused.set(input.itemId, (reused.get(input.itemId) ?? 0) + supplied);
         }
       });
     }
@@ -614,50 +694,178 @@ export async function findAutoPlans(
   recipesFor: (id: string) => Promise<Recipe[]>,
   interrupted: () => boolean = () => false,
   budget = 5000,
+  onProgress?: (result: PlannerResult) => void,
 ): Promise<PlannerResult> {
   const cache = new Map<string, Promise<Recipe[]>>();
   const lookup = (id: string) => {
     if (!cache.has(id)) cache.set(id, recipesFor(id));
     return cache.get(id)!;
   };
-  const primaryDeadline = Date.now() + 8000;
+  const breadth = Math.max(1, budget / 5000);
+  const machineCache = new Map<Recipe, ReturnType<typeof plannerMachine>>();
+  const primaryDeadline = Date.now() + Math.min(120000, 8000 * breadth);
   const primary = await findRoutes(
-    { ...options, maxSuggestions: Math.min(100, options.maxSuggestions * 5) },
+    { ...options, maxSuggestions: Math.min(2000, Math.min(100, options.maxSuggestions * 5) * breadth) },
     lookup,
     () => interrupted() || Date.now() > primaryDeadline,
     Math.max(1, Math.floor(budget / 2)),
+    false,
+    machineCache,
   );
   let examined = primary.examined;
   let limited = primary.limited;
   const plans: PlannerPlan[] = [];
+  const planKeys = new Set<string>();
+  const accepted = new Map<string, PlannerPlan>();
+  const eligibility = new WeakMap<PlannerPlan, boolean>();
+  const bannedIds = new Set(options.bannedNeededItemIds ?? []);
+  const startupCache = new WeakMap<PlannerPlan, ReturnType<typeof plannerStartupMaterials>>();
+  const startup = (plan: PlannerPlan) => {
+    let value = startupCache.get(plan);
+    if (!value) { value = plannerStartupMaterials(plan, bannedIds); startupCache.set(plan, value); }
+    return value;
+  };
+  const eligible = (plan: PlannerPlan) => {
+    const cached = eligibility.get(plan);
+    if (cached !== undefined) return cached;
+    let valid = options.maxTotalEu === undefined || plannerNormalizedTotalEu(plan, options.targetId) <= options.maxTotalEu;
+    if (valid && options.bannedNeededItemIds?.length) {
+      const { summary } = plannerComparisonSummary(plan, options.targetId);
+      valid = startup(plan).missing.size === 0 && !summary.inputs.some(flow => options.bannedNeededItemIds!.includes(flow.item.id) && !summary.recursiveInputIds.includes(flow.item.id));
+    }
+    eligibility.set(plan, valid);
+    return valid;
+  };
+  const report = (plan: PlannerPlan) => {
+    plan = reuseByproducts(plan);
+    if (accepted.has(plan.key) || options.excludedPlans.includes(plan.key) || !eligible(plan)) return;
+    accepted.set(plan.key, plan);
+    const ranked = [...accepted.values()].sort((a, b) => comparePlans(options, a, b)).slice(0, options.maxSuggestions);
+    accepted.clear();
+    for (const candidate of ranked) accepted.set(candidate.key, candidate);
+    onProgress?.({ plans: ranked, examined, limited: true });
+  };
+  for (const plan of primary.plans) { if (interrupted()) break; report(plan); }
   const branchBudget = Math.max(primary.examined, Math.floor(budget * 0.8));
-  for (const original of primary.plans) {
-    let plan = reuseByproducts(original);
-    const attempted = new Set<string>();
-    while ((options.inputIds?.length || options.inputId || Object.keys(options.inputFactors ?? {}).length) && plan.steps.length < options.maxSteps) {
-      const supply = plan.supplies.find(
-        (supply) => !attempted.has(supply.item.id),
-      );
+  // Estimate the remaining production depth for banned inputs. Immediate ban
+  // counts alone favor cheap container conversions and hide shorter real chains.
+  const productionDependencies = new Map<string, string[][]>();
+  for (const id of bannedIds) {
+    if (interrupted()) break;
+    const dependencies: string[][] = [];
+    for (const recipe of await lookup(id)) {
+      await yieldSearchWork();
+      if (interrupted()) break;
+      if (options.excludedRecipes.includes(recipe.id) || isContainerConversion(recipe)) continue;
+      if (!machineCache.has(recipe)) machineCache.set(recipe, plannerMachine(recipe, options));
+      if (!machineCache.get(recipe)) continue;
+      dependencies.push([...new Set(recipe.ingredients.filter(i => i.direction === 'input' && i.consumed && i.amount > 0 && bannedIds.has(i.itemId)).map(i => i.itemId))]);
+    }
+    productionDependencies.set(id, dependencies);
+  }
+  const productionDepth = new Map([...bannedIds].map(id => [id, Infinity]));
+  for (let pass = 0; pass < bannedIds.size; pass++) {
+    for (const [id, alternatives] of productionDependencies) {
+      for (const dependencies of alternatives) {
+        const depth = 1 + dependencies.reduce((sum, input) => sum + (productionDepth.get(input) ?? 0), 0);
+        if (depth < productionDepth.get(id)!) productionDepth.set(id, depth);
+      }
+    }
+  }
+  // Keep alternative ingredient branches alive: the cheapest immediate branch
+  // can lead to an impossible banned dependency several recipes later.
+  type PendingPlan = { original: PlannerPlan; plan: PlannerPlan; attempted: Set<string>; optional: boolean; repetition?: number };
+  const optionalPlans: PendingPlan[] = [];
+  const banCounts = new WeakMap<PlannerPlan, number>();
+  const untimedCounts = new WeakMap<PlannerPlan, number>();
+  const untimedSteps = (plan: PlannerPlan) => {
+    let count = untimedCounts.get(plan);
+    if (count === undefined) {
+      count = plan.steps.filter(step => !hasRecipeTiming(step.recipe)).length;
+      untimedCounts.set(plan, count);
+    }
+    return count;
+  };
+  const outstandingBans = (plan: PlannerPlan) => {
+    const cached = banCounts.get(plan);
+    if (cached !== undefined) return cached;
+    const produced = startup(plan).available;
+    const count = plan.supplies.filter(supply => bannedIds.has(supply.item.id) && !produced.has(supply.item.id))
+      .reduce((sum, supply) => sum + Math.min(1000, productionDepth.get(supply.item.id) ?? 1000), 0);
+    banCounts.set(plan, count);
+    return count;
+  };
+  // Untimed crafting cannot supply a rate in the diagram summary. Expanding
+  // its cheap conversions first can exhaust the budget on routes that final
+  // validation rejects. Keep them as fallbacks, after timed production paths.
+  const compareRequiredBranches = (a: PlannerPlan, b: PlannerPlan) =>
+    untimedSteps(a) - untimedSteps(b) ||
+    a.steps.length + outstandingBans(a) - b.steps.length - outstandingBans(b) ||
+    outstandingBans(a) - outstandingBans(b);
+  const pendingPlans = new PriorityQueue<PendingPlan>((a, b) => bannedIds.size
+    ? (a.repetition ?? 0) - (b.repetition ?? 0) || compareRequiredBranches(a.plan, b.plan) || a.plan.steps.length - b.plan.steps.length : 0);
+  const materialStates = new Map<string, number>();
+  const requiredBranches = new Map<string, PlannerResult>();
+  const enqueue = (state: PendingPlan) => {
+    // Explore distinct material paths before more machine/recipe variants of
+    // the same path. Retain every variant so ranking and exclusions still apply.
+    const produced = startup(state.plan).available;
+    const missing = state.plan.supplies.filter(s => bannedIds.has(s.item.id) && !produced.has(s.item.id)).map(s => s.item.id).sort();
+    const key = JSON.stringify([state.plan.steps.length, [...produced].sort(), missing, [...state.attempted].sort()]);
+    const repetition = materialStates.get(key) ?? 0;
+    materialStates.set(key, repetition + 1);
+    pendingPlans.push({ ...state, repetition });
+  };
+  for (const original of primary.plans) enqueue({ original, plan: reuseByproducts(original), attempted: new Set(), optional: false });
+  let expanded = 0;
+  while ((pendingPlans.length || optionalPlans.length) && expanded++ < budget) {
+    await yieldSearchWork();
+    if (interrupted()) { limited = true; break; }
+    const state = (pendingPlans.shift() ?? optionalPlans.shift())!;
+    const { original } = state;
+    let plan = state.plan;
+    const attempted = new Set(state.attempted);
+    while ((options.bannedNeededItemIds?.length || options.inputIds?.length || options.inputId || Object.keys(options.inputFactors ?? {}).length) && plan.steps.length < options.maxSteps) {
+      // Bans prohibit entirely external supplies, not partially supplied ones.
+      // A byproduct can satisfy that rule without adding another producer.
+      const produced = startup(plan).available;
+      const pending = plan.supplies.filter(supply => bannedIds.has(supply.item.id)
+        ? !produced.has(supply.item.id) : !attempted.has(supply.item.id));
+      // Resolve hard bans across all alternatives before spending the bounded
+      // search on optional improvements to other external inputs.
+      const supply = options.bannedNeededItemIds?.length
+        // Complex dependencies can provide simpler ones as byproducts.
+        ? pending.filter(supply => bannedIds.has(supply.item.id)).sort((a, b) =>
+          (productionDepth.get(b.item.id) ?? 0) - (productionDepth.get(a.item.id) ?? 0))[0] ?? (state.optional ? pending[0] : undefined)
+        : pending[0];
       if (!supply || interrupted() || examined >= branchBudget) break;
+      const mustProduce = options.bannedNeededItemIds?.includes(supply.item.id) ?? false;
       attempted.add(supply.item.id);
-      const sub = await findRoutes(
+      const cachedBranch = mustProduce ? requiredBranches.get(supply.item.id) : undefined;
+      const loaded = cachedBranch ?? await findRoutes(
         {
           ...options,
           targetId: supply.item.id,
           targetAmounts: undefined,
           maxSteps: options.maxSteps - plan.steps.length,
-          maxSuggestions: 10,
+          maxSuggestions: mustProduce ? Math.ceil(400 * breadth) : Math.min(2000, 10 * breadth),
           excludedRecipes: [
             ...options.excludedRecipes,
-            ...plan.steps.map((step) => step.recipe.id),
+            ...(mustProduce ? [] : plan.steps.map((step) => step.recipe.id)),
           ],
           excludedPlans: [],
         },
         lookup,
         interrupted,
-        Math.min(400, branchBudget - examined),
+        Math.min(400 * breadth, branchBudget - examined),
+        mustProduce,
+        machineCache,
       );
-      examined += sub.examined;
+      // Required searches enumerate direct producers. Cache only complete
+      // searches; exclude recipes already in this particular plan afterwards.
+      if (mustProduce && !cachedBranch && !loaded.limited) requiredBranches.set(supply.item.id, loaded);
+      const sub = mustProduce ? { ...loaded, plans: loaded.plans.filter(branch => !branch.steps.some(step => plan.steps.some(existing => existing.recipe.id === step.recipe.id))) } : loaded;
+      examined += cachedBranch ? 0 : sub.examined;
       limited ||= sub.limited;
       const alternatives = sub.plans
         .map((branch): PlannerPlan => {
@@ -706,6 +914,7 @@ export async function findAutoPlans(
           return {
             key: `${plan.key}+[${branch.key}]`,
             targetOutputId: plan.targetOutputId,
+            balanceMachines: plan.balanceMachines,
             steps: [
               ...plan.steps,
               ...branch.steps.map((step) => ({
@@ -721,31 +930,51 @@ export async function findAutoPlans(
           };
         })
         .filter(
-          (candidate) => compareDependencies(options, candidate, plan) < 0,
+          (candidate) => mustProduce || compareDependencies(options, candidate, plan) < 0,
         );
-      alternatives.sort((a, b) => comparePlans(options, a, b));
+      alternatives.sort((a, b) => (mustProduce ? compareRequiredBranches(a, b) : 0) || comparePlans(options, a, b));
+      if (mustProduce) {
+        for (const alternative of alternatives) {
+          if (pendingPlans.length >= Math.min(budget, 20000)) { limited = true; break; }
+          enqueue({ original, plan: alternative, attempted: new Set(attempted), optional: false });
+        }
+        // Reconsider every branch globally after one required ingredient.
+        // Greedily completing the first branch starves shorter alternatives.
+        break;
+      }
       if (alternatives[0]) plan = alternatives[0];
+    }
+    if (!state.optional && options.bannedNeededItemIds?.length && !interrupted() && examined < branchBudget) {
+      const { summary } = plannerComparisonSummary(plan, options.targetId);
+      if (startup(plan).missing.size === 0 && !summary.inputs.some(flow => options.bannedNeededItemIds!.includes(flow.item.id) && !summary.recursiveInputIds.includes(flow.item.id))) {
+        if (optionalPlans.length < 20000) optionalPlans.push({ original, plan, attempted: new Set(attempted), optional: true });
+        else limited = true;
+      }
     }
     // Keep the unbranched alternative too: dismissing a plan must not suppress
     // another valid configuration using the same target recipe.
     for (const candidate of [plan, original])
       if (
         !options.excludedPlans.includes(candidate.key) &&
-        !plans.some((p) => p.key === candidate.key)
+        !planKeys.has(candidate.key)
       )
-        plans.push(candidate);
+        { plans.push(candidate); planKeys.add(candidate.key); report(candidate); }
+    // A full batch of valid required-dependency routes is ready. Additional
+    // variants can improve ranking, but should not delay usable suggestions.
+    if (bannedIds.size && accepted.size >= options.maxSuggestions)
+      return { plans: [...accepted.values()], examined, limited: true };
   }
-  plans.sort((a, b) => comparePlans(options, a, b));
+  limited ||= pendingPlans.length > 0 || optionalPlans.length > 0;
+  if (!interrupted()) plans.sort((a, b) => comparePlans(options, a, b));
   // Check the most complete plans first and reserve work for recycling rather
   // than spending the entire search on alternative source-to-target paths.
   for (const plan of [...plans]) {
     if (interrupted() || examined >= budget) break;
-    const recovered = await recoverByproducts(plan, options, lookup, interrupted, Math.min(400, budget - examined));
+    const recovered = await recoverByproducts(plan, options, lookup, interrupted, Math.min(400 * breadth, budget - examined));
     examined += recovered.examined; limited ||= recovered.limited;
     for (const candidate of recovered.plans)
-      if (candidate !== plan && !plans.some(p => p.key === candidate.key)) plans.push(candidate);
+      if (candidate !== plan && !planKeys.has(candidate.key)) { plans.push(candidate); planKeys.add(candidate.key); report(candidate); }
   }
   limited ||= interrupted() || examined >= budget;
-  plans.sort((a, b) => comparePlans(options, a, b));
-  return { plans: plans.slice(0, options.maxSuggestions), examined, limited };
+  return { plans: [...accepted.values()], examined, limited };
 }

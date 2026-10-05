@@ -33,7 +33,10 @@ export const tierColors: Record<string, string> = {
   UIV: "#5555ff",
   UMV: "#ff5555",
 };
-export function machineTier(item: Item) {
+const machineMetadataCache = new WeakMap<Item, { name: string; tooltip: string; tier: string | undefined; voltage: number | undefined }>();
+function machineMetadata(item: Item) {
+  const cached = machineMetadataCache.get(item);
+  if (cached && cached.name === item.name && cached.tooltip === item.tooltip) return cached;
   const text = item.tooltip.replace(/§./g, "");
   const match =
     text.match(/Voltage IN:[^"\n]*?\((\w+)\)/i)?.[1] ??
@@ -42,17 +45,20 @@ export function machineTier(item: Item) {
       .match(
         /\b(ULV|LV|MV|HV|EV|IV|LuV|ZPM|UV|UHV|UEV|UIV|UMV|UXV|MAX)\b/i,
       )?.[1];
-  return machineTiers.find(
+  const tier = machineTiers.find(
     (tier) => tier.toLowerCase() === match?.toLowerCase(),
   );
+  const recorded = text.match(/Voltage IN:\s*([\d,]+)/i)?.[1];
+  const voltage = recorded ? Number(recorded.replaceAll(',', '')) : tier ? 8 * 4 ** machineTiers.indexOf(tier) : undefined;
+  const result = { name: item.name, tooltip: item.tooltip, tier, voltage };
+  machineMetadataCache.set(item, result);
+  return result;
+}
+export function machineTier(item: Item) {
+  return machineMetadata(item).tier;
 }
 export function machineVoltage(item: Item): number | undefined {
-  const recorded = item.tooltip
-    .replace(/§./g, "")
-    .match(/Voltage IN:\s*([\d,]+)/i)?.[1];
-  if (recorded) return Number(recorded.replaceAll(",", ""));
-  const tier = machineTier(item);
-  return tier ? 8 * 4 ** machineTiers.indexOf(tier) : undefined;
+  return machineMetadata(item).voltage;
 }
 export function machineOptions(recipe: Recipe) {
   const required = recipePowerInfo(recipe).voltage?.match(/\((\w+)\)/)?.[1];

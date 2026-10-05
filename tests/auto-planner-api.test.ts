@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { GET, POST } from "../app/api/auto-planner/route";
 import { catalog } from "../lib/db";
 import type { PlannerResult } from "../lib/auto-planner";
+import { plannerComparisonSummary } from '../lib/planner-balance';
+import { readPlannerResultStream } from '../lib/planner-result-stream';
 import {
   fluidLookupAmounts,
   emptyFluidContainers,
@@ -24,6 +26,49 @@ const options = {
   maxSuggestions: 3,
 };
 after(() => catalog.$disconnect());
+test('planner streams valid suggestions before completing', async () => {
+  const req = request({ ...options, maxSuggestions: 1 });
+  req.headers.set('Accept', 'application/x-ndjson');
+  const response = await POST(req);
+  assert.equal(response.headers.get('content-type'), 'application/x-ndjson');
+  const counts: number[] = [];
+  const result = await readPlannerResultStream(response, progress => counts.push(progress.plans.length));
+  assert(counts.some(count => count > 0));
+  assert.equal(result.plans.length, 1);
+});
+test('EV seed oil to cetane-boosted diesel resolves tetranitromethane and ethanol bans', async () => {
+  const bannedNeededItemIds = ['fluid:tetranitromethane', 'gregtech:gt.metaitem.01:30639', 'fluid:bioethanol', 'gregtech:gt.metaitem.01:30706'];
+  const response = await POST(request({ ...options, inputId: 'fluid:seedoil', targetId: 'fluid:nitrofuel', allowMultiblocks: true, maxTier: 4, maxSteps: 10, maxSuggestions: 10, bannedNeededItemIds }));
+  assert.equal(response.status, 200);
+  const result: PlannerResult = await response.json();
+  assert(result.plans.length > 0);
+  for (const plan of result.plans) {
+    const { summary } = plannerComparisonSummary(plan, 'fluid:nitrofuel');
+    assert(!summary.inputs.some(flow => bannedNeededItemIds.includes(flow.item.id) && !summary.recursiveInputIds.includes(flow.item.id)));
+  }
+});
+test('EV seed oil routes satisfy the expanded 17-item needed-ban list within ten steps', async () => {
+  const bannedNeededItemIds = [
+    'fluid:tetranitromethane', 'gregtech:gt.metaitem.01:30639',
+    'fluid:bioethanol', 'gregtech:gt.metaitem.01:30706',
+    'fluid:ethenone', 'gregtech:gt.metaitem.01:30641',
+    'fluid:methanol', 'gregtech:gt.metaitem.01:30673',
+    'gregtech:gt.metaitem.01:30653', 'gregtech:gt.metaitem.01:685',
+    'fluid:acetone', 'gregtech:gt.metaitem.01:30717',
+    'gregtech:gt.metaitem.01:2685', 'fluid:aceticacid',
+    'fluid:nitrogendioxide', 'fluid:saltwater', 'fluid:sulfuricacid',
+  ];
+  const response = await POST(request({ ...options, inputId: 'fluid:seedoil', targetId: 'fluid:nitrofuel', allowMultiblocks: true, maxTier: 4, maxSteps: 10, maxSuggestions: 10, bannedNeededItemIds }));
+  assert.equal(response.status, 200);
+  const result: PlannerResult = await response.json();
+  assert(result.plans.length > 0);
+  for (const plan of result.plans) {
+    assert(plan.steps.length <= 10);
+    const { summary } = plannerComparisonSummary(plan, 'fluid:nitrofuel');
+    assert(!summary.inputs.some(flow => bannedNeededItemIds.includes(flow.item.id) && !summary.recursiveInputIds.includes(flow.item.id)));
+  }
+});
+
 test("batched candidate loading preserves global ranking for a large output family", async () => {
   const [large] = await catalog.$queryRaw<
     { itemId: string; matches: number }[]
@@ -154,6 +199,12 @@ test("planner filter choices include actual catalog machines and recipe handlers
   );
 });
 test("planner validates limits and source requirements", async () => {
+  for (const maxSuggestions of [0, 101, 1.5]) {
+    assert.equal((await POST(request({ ...options, maxSuggestions }))).status, 400);
+  }
+  for (const searchDurationSeconds of [30, 120, 600]) {
+    assert.equal((await POST(request({ ...options, searchDurationSeconds }))).status, 200);
+  }
   assert.equal(
     (await POST(request({ ...options, maxSteps: 101 }))).status,
     400,

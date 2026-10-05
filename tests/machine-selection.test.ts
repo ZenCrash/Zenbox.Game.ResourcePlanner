@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   machineOptions,
   machineTier,
+  machineVoltage,
   selectedMachine,
 } from "../lib/machine-selection";
 import { nodeSchema, type Item, type Recipe } from "../lib/model";
@@ -24,6 +25,17 @@ const lv = machine("basic", "LV"),
   mv = machine("advanced", "MV"),
   hv = machine("advanced-2", "HV"),
   multi = machine("multiblock");
+test('cached machine metadata refreshes when tooltip or name changes', () => {
+  const value = machine('LV Machine');
+  assert.equal(machineTier(value), 'LV');
+  assert.equal(machineVoltage(value), 32);
+  value.name = 'HV Machine';
+  assert.equal(machineTier(value), 'HV');
+  assert.equal(machineVoltage(value), 512);
+  value.tooltip = JSON.stringify(['Voltage IN: §a2,048 (§6EV§r)']);
+  assert.equal(machineTier(value), 'EV');
+  assert.equal(machineVoltage(value), 2048);
+});
 const recipe: Recipe = {
   id: "assembler",
   name: "Recipe",

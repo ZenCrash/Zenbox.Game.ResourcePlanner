@@ -1,8 +1,26 @@
 import type { PlannerPlan } from "./auto-planner";
 import { applyVariants, hasRecipeTiming } from "./model";
 import { overclockRecipe } from "./recipe-overclock";
+import { summarizeArea } from './area-summary';
 
 const gcd = (a: number, b: number): number => b ? gcd(b, a % b) : a;
+
+/** Operating energy required per target item or 1,000 mB of target fluid. */
+export function plannerNormalizedTotalEu(plan: PlannerPlan, targetId: string) {
+  const { summary, output } = plannerComparisonSummary(plan, targetId);
+  if (!output || output.rate <= 0 || summary.untimed > 0) return Infinity;
+  return summary.euPerTick * 20 * (output.item.kind === 'fluid' ? 1000 : 1) / output.rate;
+}
+export function plannerComparisonSummary(plan: PlannerPlan, targetId: string) {
+  const balance = plannerBalance(plan);
+  const bounds = { position: { x: 0, y: 0 }, width: 1, height: 1 };
+  const summary = summarizeArea(bounds, plan.steps.map((step, i) => ({ ...bounds,
+    recipe: step.recipe, machineId: step.machineId, multiblock: step.multiblock,
+    variants: step.variants, machines: balance.machines[i],
+  })));
+  const output = summary.outputs.find(flow => flow.item.id === (plan.targetOutputId ?? targetId));
+  return { summary, output };
+}
 function fraction(value: number): [number, number] | undefined {
   let x = value, h0 = 0, h1 = 1, k0 = 1, k1 = 0;
   for (let i = 0; i < 40; i++) {
@@ -18,6 +36,7 @@ function fraction(value: number): [number, number] | undefined {
  * concurrent machines needed at a common target throughput, including branches.
  * Scale the whole route up; never round individual machines independently. */
 export function plannerBalance(plan: PlannerPlan) {
+  if (plan.balanceMachines === false) return { machines: plan.steps.map(() => 1), targetPerSecond: undefined };
   const runtimes = plan.steps.map(step => overclockRecipe(applyVariants(step.recipe, step.variants), step.machineId, step.multiblock));
   const weights = plan.steps.map((step, index) => hasRecipeTiming(runtimes[index])
     ? step.cycles * (runtimes[index].cycleDurationTicks ?? runtimes[index].durationTicks) / (runtimes[index].parallel ?? 1)

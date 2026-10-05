@@ -11,6 +11,7 @@ export async function plannerRecipes(
   itemId: string,
   recipeTypes: string[] = [],
   excludedRecipes: string[] = [],
+  candidateLimit = 200,
 ) {
   const matching = await catalog.ingredient.findMany({
     where: { itemId, direction: "output", recipe: { enabled: true } },
@@ -42,7 +43,7 @@ export async function plannerRecipes(
       a.durationTicks - b.durationTicks ||
       (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
   );
-  const selected = candidates.slice(0, 200);
+  const selected = candidates.slice(0, candidateLimit);
   const recipes: Recipe[] = [];
   for (let start = 0; start < selected.length; start += 50) {
     recipes.push(
@@ -74,7 +75,7 @@ export async function plannerRecipes(
   }
   const items = new Map(machines.map((item) => [item.id, item]));
   return {
-    capped: candidates.length > 200,
+    capped: candidates.length > candidateLimit,
     recipes: recipes.map((recipe) => {
       const hydrated = { ...recipe, ingredients: recipe.ingredients.map(ingredient => ({
         ...ingredient,

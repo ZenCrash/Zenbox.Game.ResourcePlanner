@@ -57,6 +57,21 @@ public class PlannerExport {
             }
             if (world == null || player == null) return;
             if (phase == 1) {
+                if(new File(game,"planner-export.ores-only").isFile()) {
+                    Class<?> ore = Class.forName("net.minecraftforge.oredict.OreDictionary");
+                    Map<String,Object> groups = new TreeMap<String,Object>();
+                    for(String name:(String[])call(ore,"getOreNames")) {
+                        List<Object> members = new ArrayList<Object>();
+                        for(Object stack:(Iterable<?>)call(ore,"getOres",name)) {
+                            Object item=call(stack,"func_77973_b|getItem");
+                            Object registry=field(Class.forName("net.minecraft.item.Item"),"field_150901_e|itemRegistry");
+                            members.add(Arrays.asList(String.valueOf(call(registry,"func_148750_c|getNameForObject",item)),call(stack,"func_77960_j|getItemDamage")));
+                        }
+                        groups.put(name,members);
+                    }
+                    write("ore-dictionary.json",groups);status("ore dictionary complete");
+                    disabled=true;call(mc,"func_71400_g|shutdown");return;
+                }
                 if(new File(game,"planner-export.material-icons.json").isFile()){exportMaterialIcons(game);disabled=true;call(mc,"func_71400_g|shutdown");return;}
                 if(new File(game,"planner-export.more-layouts").isFile()){exportMoreLayouts();disabled=true;call(mc,"func_71400_g|shutdown");return;}
                 if(new File(game,"planner-export.layouts-only").isFile()) {
