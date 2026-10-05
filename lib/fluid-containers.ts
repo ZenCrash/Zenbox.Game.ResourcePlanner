@@ -126,7 +126,7 @@ function containerRelations(recipes: { ingredients: ContainerIngredient[] }[]) {
 }
 
 async function containerRecipes(itemIds: string[]) {
-  return catalog.recipe.findMany({
+  const recipes = await catalog.recipe.findMany({
     where: {
       enabled: true,
       handler: "Fluid Canner",
@@ -143,6 +143,22 @@ async function containerRecipes(itemIds: string[]) {
       },
     },
   });
+  // The game registry also covers buckets/capsules which have no Fluid Canner
+  // recipe. Keep these as lookup relationships, not invented crafting recipes.
+  const tables = await catalog.$queryRawUnsafe<{ name: string }[]>(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='RuntimeFluidContainer'",
+  );
+  if (!tables.length || !itemIds.length) return recipes;
+  const placeholders = itemIds.map(() => '?').join(',');
+  const links = await catalog.$queryRawUnsafe<{ filled: string; empty: string; fluid: string; liters: number }[]>(
+    `SELECT filled, empty, fluid, liters FROM RuntimeFluidContainer WHERE filled IN (${placeholders}) OR fluid IN (${placeholders})`,
+    ...itemIds, ...itemIds,
+  );
+  return [...recipes, ...links.map(link => ({ ingredients: [
+    { itemId: link.empty, direction: 'input', amount: 1, item: { kind: 'item' } },
+    { itemId: link.fluid, direction: 'input', amount: link.liters, item: { kind: 'fluid' } },
+    { itemId: link.filled, direction: 'output', amount: 1, item: { kind: 'item' } },
+  ] }))];
 }
 
 export async function fluidContents(itemId: string) {

@@ -1518,7 +1518,15 @@
       },
       "texture": "godforge",
       "decorations": [],
-      "overlays": {}
+      "overlays": {},
+      "positions": {
+        "itemInputs": [
+          {
+            "x": 52,
+            "y": 33
+          }
+        ]
+      }
     },
     "Milling": {
       "id": "gtpp.recipe.oremill",

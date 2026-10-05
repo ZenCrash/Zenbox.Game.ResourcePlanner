@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { gameRecipeLayout, gameRecipeGeometry, gameSlotPositions } from '../lib/game-recipe-layout';
 import definitions from '../lib/game-recipe-layouts.json';
+import batchDefinitions from '../lib/batch-game-recipe-layouts.json';
 import type { Ingredient } from '../lib/model';
 
 test('standard machines retain game capacity, spacing, and fluid separation', () => {
@@ -33,7 +34,7 @@ test('overlay direction and fluid flags match the game, and decorations are reta
 });
 
 test('every imported map has assets, nonoverlapping slots, and bounds containing its content', () => {
-  for (const [name,definition] of Object.entries(definitions.layouts)) {
+  for (const [name,definition] of Object.entries({...definitions.layouts, ...batchDefinitions})) {
     const geometry = gameRecipeGeometry(definition,[]);
     const positions = geometry.slots.map(s=>`${s.x},${s.y}`);
     assert.equal(new Set(positions).size,positions.length,name);

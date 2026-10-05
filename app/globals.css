@@ -1861,6 +1861,26 @@ h3 {
 .planner-needed-ban-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .planner-needed-menu button.planner-needed-copy { background: #7e22ce; color: #fff; margin-bottom: 3px; }
 .planner-needed-menu button.planner-needed-copy:hover:not(:disabled) { background: #9333ea; }
+.sidebar-bottom .dev-recipe-button { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; margin-top: 8px; background: #7e22ce; color: #fff; border-color: #7e22ce; }
+.sidebar-bottom .dev-recipe-button:hover { background: #9333ea; }
+.dev-recipe-type { position: relative; display: flex; align-items: center; margin-inline: var(--machine-strip-width); padding: 12px 0; }
+.dev-recipe-type input { width: 100%; min-width: 0; box-sizing: border-box; padding-inline: 34px; }
+.dev-recipe-type > svg { position: absolute; left: 10px; pointer-events: none; }
+.dev-recipe-type > button { position: absolute; right: 4px; display: flex; align-items: center; justify-content: center; padding: 4px; background: transparent; border: 0; }
+.dev-recipe-lookup { margin: 0 var(--machine-strip-width) 12px; padding: 8px; text-align: center; background: var(--interface-sidebar, var(--panel-gradient)); color: var(--foreground); border: 1px solid var(--interface-border, var(--line)); border-radius: 4px; }
+.dev-recipe-dialog > .recipe-browser-heading .recipe-title { padding-left: 12px; }
+.batch-recipe-layout { position: relative; flex-shrink: 0; image-rendering: pixelated; }
+.batch-layout-background { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.batch-layout-slot { position: absolute; width: 36px; height: 36px; }
+.batch-reagent-result { position: absolute; left: 166px; top: 30px; display: grid; text-align: center; gap: 4px; font: 18px/1.2 Minecraft, monospace; color: #000; }
+.batch-rf { position: absolute; right: 4px; bottom: 4px; color: #808080; font: 18px/1.2 Minecraft, monospace; }
+.batch-decay-info { position: absolute; left: 0; top: 44px; display: grid; gap: 4px; color: #000; font: 18px/1.2 Minecraft, monospace; }
+.batch-decay-info > :first-child { margin-bottom: 10px; }
+.batch-ritual-icon { position: absolute; top: 0; width: 30px; height: 30px; }
+.batch-ritual-icon > img { width: 100%; height: 100%; object-fit: contain; }
+.batch-aspect-equation, .batch-aspect-term { display: flex; align-items: center; gap: 14px; color: #333; font-size: 24px; }
+.batch-aspect-equation { justify-content: center; min-width: 230px; padding: 16px 0; }
+.batch-aspect-equation .item-slot { border: 0; background: transparent; box-shadow: none; }
 .planner-needed-ban-row + .planner-needed-ban-row { margin-top: 3px; }
 .planner-needed-ban-group { border: 1px solid var(--line); border-radius: 4px; padding: 3px; margin-block: 4px; }
 .planner-needed-ban-heading { display: flex; align-items: center; gap: 6px; padding: 4px; cursor: pointer; list-style: none; border-radius: 4px; }
@@ -5387,3 +5407,13 @@ span.summary-area-name { flex: 0 1 auto; width: auto; }
 .additional-layout:has(.tic-extruding-nc) { margin-top:12px; }
 .item-tooltip-line { white-space: pre-wrap; }
 .foreground-item-tooltip:has([data-tooltip-expanded]) { max-width: min(760px, calc(100vw - 16px)); }
+
+.batch-native-frame .item-slot { border-color: transparent; background: transparent; box-shadow: none; }
+.recipe-dialog:has(.batch-recipe-layout) { width: calc(440px + 2 * var(--machine-strip-width)); }
+.recipe-view:has(.batch-recipe-layout) .recipe-process { padding-inline: 0; justify-content: center; }
+.machine-card:has(.batch-recipe-layout) { min-width: 370px; }
+.nei-information-scroll { max-width: 100%; overflow: auto; background: #c6c6c6; }
+.nei-information-page { position: relative; margin: 12px auto; flex-shrink: 0; }
+.nei-information-page > img { display: block; width: 100%; height: 100%; image-rendering: pixelated; }
+.nei-information-link { position: absolute; width: 32px; height: 32px; padding: 0; border: none; border-radius: 0; background: transparent; }
+.nei-information-link:hover, .nei-information-link:focus-visible { background: #ffffff30; outline: 1px solid #fff; }

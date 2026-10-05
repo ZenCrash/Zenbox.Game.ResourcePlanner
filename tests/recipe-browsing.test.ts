@@ -5,6 +5,8 @@ import { catalog } from "../lib/db";
 import { recipeTabIcon, type Recipe } from "../lib/model";
 import { hydrateRecipeVariants } from "../lib/recipe-data";
 import { containedFluids, fluidContents, fluidLookupItems, hydrateFluidContents } from "../lib/fluid-containers";
+import { machineTier } from '../lib/machine-selection';
+import { recipeTier } from '../lib/recipe-picker-order';
 
 test("oil-cell reference metadata comes from the real fill/drain recipes", async () => {
   const recipe = await catalog.recipe.findFirstOrThrow({
@@ -34,9 +36,11 @@ for (const handler of [
       recipe.craftingMachines!.every((item) => item.id.startsWith("gregtech:")),
     );
     assert(recipe.craftingMachines!.every((item) => item.image));
+    const machine = recipe.craftingMachines!.find(item => !machineTier(item) || machineTier(item) === recipeTier(recipe));
+    assert(machine, 'a machine supporting this recipe tier');
     const response = await GET(
       new Request(
-        `http://localhost/api/recipes?mode=uses&item=${encodeURIComponent(recipe.craftingMachines![0].id)}`,
+        `http://localhost/api/recipes?mode=uses&item=${encodeURIComponent(machine.id)}`,
       ),
     );
     const found: Recipe[] = await response.json();

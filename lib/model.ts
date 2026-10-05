@@ -186,6 +186,15 @@ export function hasRecipeTiming(recipe: Pick<Recipe, "durationTicks">) {
   return Number.isFinite(recipe.durationTicks) && recipe.durationTicks > 0;
 }
 export function recipeTabIcon(recipe: Recipe): string | null {
+  try {
+    const layout = JSON.parse(recipe.layout);
+    if (typeof layout.tabIcon === "string" && layout.tabIcon.startsWith("/assets/"))
+      return layout.tabIcon;
+  } catch {}
+  const tabMachine = recipe.handler === "Blast Furnace" ? "gregtech:gt.blockmachines:1000"
+    : recipe.handler === "Blasting" ? "etfuturum:blast_furnace" : undefined;
+  const currentIcon = recipe.craftingMachines?.find(item => item.id === tabMachine)?.image;
+  if (currentIcon) return currentIcon;
   if (recipe.handler === "ABS Non-Alloy Recipes")
     return "/ui/abs-non-alloy-tab.png";
   if (recipe.handler === "Alloy Smelter Recycling")
@@ -206,14 +215,6 @@ export function recipeTabIcon(recipe: Recipe): string | null {
     return "/ui/macerator-recycling-tab.png";
   if (recipe.handler === "Fluid Extractor Recycling")
     return "/ui/fluid-extractor-tab.png";
-  try {
-    const layout = JSON.parse(recipe.layout);
-    if (
-      typeof layout.tabIcon === "string" &&
-      layout.tabIcon.startsWith("/assets/")
-    )
-      return layout.tabIcon;
-  } catch {}
   return (
     recipe.ingredients.find((i) => i.direction === "output" && i.item.image)
       ?.item.image ??

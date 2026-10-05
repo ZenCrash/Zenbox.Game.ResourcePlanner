@@ -2,6 +2,7 @@ import { isGtnhInstalled } from "@/lib/game-packs";
 import { catalog } from "@/lib/db";
 import { hydrateRecipeVariants } from "@/lib/recipe-data";
 import { fluidLookupItems } from "@/lib/fluid-containers";
+import { neiAssociatedRecipeIds } from "@/lib/nei-associated-recipes";
 import type { Recipe } from "@/lib/model";
 import { compareRecipeHandlers } from "@/lib/recipe-order";
 import { machineTier } from "@/lib/machine-selection";
@@ -43,6 +44,9 @@ export async function GET(request: Request) {
             distinct: ["recipeId"],
           })
         ).map((i) => i.recipeId);
+  if (!ids && !category) {
+    matchingIds.push(...(await Promise.all(lookupItems.map(id => neiAssociatedRecipeIds(id, uses)))).flat());
+  }
   if (!ids && uses) {
     const [variants, machines] = await Promise.all([
       catalog.ingredientVariant.findMany({

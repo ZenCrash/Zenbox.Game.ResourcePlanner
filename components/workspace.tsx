@@ -42,6 +42,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Save,
+  CodeXml,
   X,
   Workflow,
   Undo2,
@@ -79,6 +80,7 @@ import {
   type Recipe,
 } from "@/lib/model";
 import { api, type Project } from "./project-list";
+import { DevRecipeBrowser } from "./dev-recipe-browser";
 import { Inventory } from "./inventory";
 import { DiagramActions } from "./diagram-actions";
 import {
@@ -146,6 +148,7 @@ export function Workspace({ project }: { project: Project }) {
 function Editor({ project }: { project: Project }) {
   const { settings, update: updateDisplaySettings } = useDisplaySettings();
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [devRecipeBrowser, setDevRecipeBrowser] = useState(false);
   const [itemPicker, setItemPicker] = useState(false);
   const [autoPlanner, setAutoPlanner] = useState(false);
   const [scaleView, setScaleView] = useState(false);
@@ -590,6 +593,7 @@ function Editor({ project }: { project: Project }) {
         browserEpoch.current++;
         setSelectionMenu(null);
         setItemPicker(false);
+        setDevRecipeBrowser(false);
         setAutoPlanner(false);
         setBrowser(null);
         setDialog(null);
@@ -602,7 +606,7 @@ function Editor({ project }: { project: Project }) {
         !ready ||
         browser ||
         dialog ||
-        itemPicker || autoPlanner ||
+        itemPicker || devRecipeBrowser || autoPlanner ||
         editing ||
         !(e.ctrlKey || e.metaKey)
       )
@@ -625,7 +629,7 @@ function Editor({ project }: { project: Project }) {
         !ready ||
         browser ||
         dialog ||
-        itemPicker || autoPlanner ||
+        itemPicker || devRecipeBrowser || autoPlanner ||
         editing ||
         !e.clipboardData
       )
@@ -688,6 +692,7 @@ function Editor({ project }: { project: Project }) {
     browser,
     dialog,
     itemPicker,
+    devRecipeBrowser,
     autoPlanner,
     nodes,
     edges,
@@ -1777,6 +1782,7 @@ function Editor({ project }: { project: Project }) {
                   <Save size={15} /> Save
                 </button>
               </div>
+              {process.env.NODE_ENV === "development" && <button className="dev-recipe-button" onClick={() => setDevRecipeBrowser(true)}><CodeXml size={15} /> Recipe browser</button>}
             </div>
           </aside>}</ResizableSidebar>
           <section className="editor">
@@ -1976,7 +1982,7 @@ function Editor({ project }: { project: Project }) {
                 minZoom={0.05}
                 maxZoom={3}
                 deleteKeyCode={
-                  browser || dialog || itemPicker || autoPlanner
+                  browser || dialog || itemPicker || devRecipeBrowser || autoPlanner
                     ? null
                     : ["Backspace", "Delete"]
                 }
@@ -2189,6 +2195,7 @@ function Editor({ project }: { project: Project }) {
             onItemDragEnd={() => { draggedCatalogItem.current = null;  }}
           />}</ResizableSidebar>
         </div>
+        {process.env.NODE_ENV === "development" && devRecipeBrowser && <DevRecipeBrowser onClose={() => setDevRecipeBrowser(false)} />}
         {autoPlanner && <AutoRecipePlanner onClose={() => setAutoPlanner(false)} onAdd={addPlannedGraph} />}
         {itemPicker && (
           <div className="modal-backdrop" onClick={() => setItemPicker(false)}>

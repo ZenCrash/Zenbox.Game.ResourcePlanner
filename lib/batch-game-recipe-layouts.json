@@ -1,0 +1,131 @@
+{
+  "Baryonic Perfection": {
+    "id": "Baryonic Perfection",
+    "frontend": "RecipeMapFrontend",
+    "counts": {
+      "itemInputs": 2,
+      "itemOutputs": 2,
+      "fluidInputs": 1,
+      "fluidOutputs": 2
+    },
+    "texture": "arrow",
+    "decorations": [],
+    "overlays": {}
+  },
+  "Bio Lab": {
+    "id": "Bio Lab",
+    "frontend": "RecipeMapFrontend",
+    "counts": {
+      "itemInputs": 6,
+      "itemOutputs": 2,
+      "fluidInputs": 1,
+      "fluidOutputs": 0
+    },
+    "texture": "arrow_multiple",
+    "decorations": [],
+    "overlays": {}
+  },
+  "Circuit Assembly Line": {
+    "id": "Circuit Assembly Line",
+    "frontend": "RecipeMapFrontend",
+    "counts": {
+      "itemInputs": 6,
+      "itemOutputs": 1,
+      "fluidInputs": 1,
+      "fluidOutputs": 0
+    },
+    "texture": "circuit_assembler",
+    "decorations": [],
+    "overlays": {}
+  },
+  "Cold Trap": {
+    "id": "Cold Trap",
+    "frontend": "RecipeMapFrontend",
+    "counts": {
+      "itemInputs": 2,
+      "itemOutputs": 9,
+      "fluidInputs": 1,
+      "fluidOutputs": 1
+    },
+    "texture": "sift",
+    "decorations": [],
+    "overlays": {}
+  },
+  "Degassing": {
+    "id": "Degassing",
+    "frontend": "RecipeMapFrontend",
+    "counts": {
+      "itemInputs": 0,
+      "itemOutputs": 3,
+      "fluidInputs": 1,
+      "fluidOutputs": 2
+    },
+    "texture": "arrow",
+    "decorations": [],
+    "overlays": {}
+  },
+  "Multiblock Dehydrator": {
+    "id": "Multiblock Dehydrator",
+    "frontend": "LargeNEIFrontend",
+    "counts": {
+      "itemInputs": 6,
+      "itemOutputs": 9,
+      "fluidInputs": 3,
+      "fluidOutputs": 3
+    },
+    "texture": "arrow",
+    "decorations": [],
+    "overlays": {}
+  },
+  "Digester": {
+    "id": "Digester",
+    "frontend": "RecipeMapFrontend",
+    "counts": {
+      "itemInputs": 1,
+      "itemOutputs": 1,
+      "fluidInputs": 1,
+      "fluidOutputs": 1
+    },
+    "texture": "arrow_multiple",
+    "decorations": [],
+    "overlays": {}
+  },
+  "Dissolution Tank": {
+    "id": "Dissolution Tank",
+    "frontend": "RecipeMapFrontend",
+    "counts": {
+      "itemInputs": 2,
+      "itemOutputs": 3,
+      "fluidInputs": 2,
+      "fluidOutputs": 1
+    },
+    "texture": "arrow_multiple",
+    "decorations": [],
+    "overlays": {}
+  },
+  "Draconic Evolution Fusion ...": {
+    "id": "Draconic Evolution Fusion ...",
+    "frontend": "RecipeMapFrontend",
+    "counts": {
+      "itemInputs": 9,
+      "itemOutputs": 1,
+      "fluidInputs": 1,
+      "fluidOutputs": 1
+    },
+    "texture": "arrow",
+    "decorations": [],
+    "overlays": {
+      "itemInputs": [
+        "dust",
+        "dust",
+        "dust",
+        "dust",
+        "dust",
+        "dust",
+        "dust",
+        "dust",
+        "dust"
+      ]
+    }
+  }
+}

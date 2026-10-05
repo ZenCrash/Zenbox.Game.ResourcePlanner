@@ -1,4 +1,5 @@
 import definitions from './game-recipe-layouts.json';
+import batchDefinitions from './batch-game-recipe-layouts.json';
 import type { Ingredient } from './model';
 import { recipeSlotGroups, type RecipeSlotCounts } from './recipe-slots';
 
@@ -9,8 +10,9 @@ export type GameRecipeLayout = {
   texture: string;
   decorations: { x: number; y: number; width: number; height: number; texture: string }[];
   overlays: Partial<Record<keyof RecipeSlotCounts, (string | null)[]>>;
+  positions?: Partial<Record<keyof RecipeSlotCounts, { x: number; y: number }[]>>;
 };
-const layouts: Record<string, GameRecipeLayout> = definitions.layouts;
+const layouts: Record<string, GameRecipeLayout> = { ...definitions.layouts, ...batchDefinitions };
 export function gameRecipeLayout(handler: string): GameRecipeLayout | undefined {
   return layouts[handler];
 }
@@ -42,6 +44,7 @@ export function gameRecipeGeometry(layout: GameRecipeLayout, ingredients: Ingred
   const slots = groups.flatMap(({kind,direction,slots}) => {
     const key = `${kind}${direction === 'input' ? 'Inputs' : 'Outputs'}` as keyof RecipeSlotCounts;
     const positions = gameSlotPositions(slots.length, direction, kind, layout.frontend, itemRows);
+    layout.positions?.[key]?.forEach((position, index) => { if (index < positions.length) positions[index] = position; });
     return slots.map((ingredient,index) => ({ingredient, kind, direction, index, ...positions[index], overlay: layout.overlays[key]?.[index] ?? null}));
   });
   // Keep the game's standard margins and center spacing; grow for larger maps.

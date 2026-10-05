@@ -213,6 +213,7 @@ export function CyclingRecipe({
   disabled,
   pager,
   navigation,
+  readOnly = false,
 }: {
   recipe: Recipe;
   onBrowse: Browse;
@@ -221,6 +222,7 @@ export function CyclingRecipe({
   disabled: boolean;
   pager?: ReactNode;
   navigation?: { previous: ReactNode; next: ReactNode };
+  readOnly?: boolean;
 }) {
   const [frame, setFrame] = useState(0);
   const [paused, setPaused] = useState(false);
@@ -248,6 +250,9 @@ export function CyclingRecipe({
     };
   }, []);
   const variants = cycleVariants(recipe, frame);
+  let information = false;
+  let referenceOnly = false;
+  try { const layout = JSON.parse(recipe.layout); information = layout.information === true; referenceOnly = layout.referenceOnly === true; } catch {}
   return (
     <div
       onPointerMove={(event) => {
@@ -262,12 +267,12 @@ export function CyclingRecipe({
         navigation={navigation}
         onBrowse={onBrowse}
       />
-      <p className="variant-hint">
+      {referenceOnly && <p className="variant-hint">Recipe reference · browsing only</p>}
+      {!information && <p className="variant-hint">
         {paused ? "Variants paused" : "Hold Shift to pause variants"}
-        <br />
-        Adding a recipe locks the displayed items
-      </p>
-      <div className="recipe-add-actions">
+        {!readOnly && <><br />Adding a recipe locks the displayed items</>}
+      </p>}
+      {!readOnly && !information && <div className="recipe-add-actions">
       <button
         type="button"
         className="primary select-recipe"
@@ -286,7 +291,7 @@ export function CyclingRecipe({
       >
         <Plus size={20} aria-hidden="true" />
       </button>
-      </div>
+      </div>}
     </div>
   );
 }
@@ -1341,8 +1346,62 @@ function MachineRecipeLayout({
   );
 }
 
+function BatchRecipeLayout({ recipe, onBrowse }: { recipe: Recipe; onBrowse?: Browse }) {
+  const metadata = JSON.parse(recipe.layout);
+  const kind: string = metadata.batchLayout;
+  const info = metadata.batchFields ?? {};
+  const inputs = recipe.ingredients.filter(i => i.direction === 'input');
+  const outputs = recipe.ingredients.filter(i => i.direction === 'output');
+  const slot = (i: Ingredient | undefined, x: number, y: number, key: string, chance?: number) => <div key={key} className={'batch-layout-slot' + ((['binding','ender-alloy'].includes(kind) && i?.direction === 'output') || kind === 'decayables' ? ' batch-native-frame' : '')} style={{ left: x * 2, top: y * 2 }}>
+    {i ? <ItemSlot ingredient={i} item={i.item} amount={i.amount} onBrowse={onBrowse} /> : <span className="item-slot empty-recipe-slot" />}
+    {i && !i.consumed && <span className="tic-extruding-nc">NC</span>}
+    {(chance ?? (i?.direction === 'output' ? i.chance : 1))! < 1 && <span className="blast-furnace-chance">{Number(((chance ?? i!.chance) * 100).toFixed(1))}%</span>}
+  </div>;
+  if (kind === 'acclimatiser') {
+    // Center the visible six-column grid, not the padded NEI texture atlas.
+    // The upper treatment slot is centered between the two middle columns.
+    const at = (x: number, y: number) => recipe.ingredients.find(i => i.x === x && i.y === y);
+    return <div className="batch-recipe-layout batch-acclimatiser" style={{ width: 216, height: 126, margin: '12px auto' }} aria-label="Acclimatiser recipe layout">
+      {slot(at(76, 2), 45, 0, 'treatment')}
+      {Array.from({ length: 12 }, (_, n) => {
+        const column = n % 6, row = Math.floor(n / 6);
+        return slot(at(31 + column * 18, 29 + row * 18), column * 18, 27 + row * 18, 'organism-' + n);
+      })}
+    </div>;
+  }
+  if (recipe.handler === 'Aspect Combination') return <div className="batch-aspect-equation">
+    {outputs.map(i => <ItemSlot key={i.slot} item={i.item} onBrowse={onBrowse} />)}<span>=</span>
+    {inputs.map((i,n) => <span className="batch-aspect-term" key={i.slot}>{n > 0 && <span>+</span>}<ItemSlot item={i.item} onBrowse={onBrowse} /></span>)}
+  </div>;
+  if (recipe.handler === 'Clarifier') {
+    const fluidsIn=inputs.filter(i=>i.item.kind==='fluid'), fluidsOut=outputs.filter(i=>i.item.kind==='fluid');
+    const solids=outputs.filter(i=>i.item.kind!=='fluid');
+    return <div className="batch-recipe-layout" style={{width:344,height:160}}>
+      <img className="batch-layout-background" style={{width:340}} src="/ui/recipe-layouts/clarifier.png" alt="" />
+      {slot(fluidsIn[0],6,7,'water')}{slot(fluidsOut[0],154,7,'clean')}
+      {slot(inputs.find(i=>i.item.kind!=='fluid'),79,43,'filter',0.2)}
+      {Array.from({length:4},(_,n)=>slot(solids[n],136+(n%2)*18,43+Math.floor(n/2)*18,'drop'+n))}
+    </div>;
+  }
+  const height = kind === 'analyzer' ? 152 : kind === 'calcinator' ? 100 : ['binding','ender-alloy','decayables'].includes(kind) ? 130 : kind === 'animal-trap' ? 132 : 160;
+  return <div className={'batch-recipe-layout batch-'+kind} style={{width:kind==='animal-trap'?340:332,height}} aria-label={recipe.handler+' recipe layout'}>
+    <img className="batch-layout-background" src={'/ui/recipe-layouts/'+kind+'.png'} alt="" />
+    {kind === 'calcinator' ? <>
+      {inputs.map((i,n)=>slot(i,(i.x??32)-1,(i.y??(n?33:6))-1,'in'+n))}
+      <div className="batch-reagent-result"><span>{Number(info.amount).toLocaleString('de-DE')} AR</span><span style={{color:info.color}}>{info.name}</span></div>
+    </> : recipe.ingredients.map((i,n)=>slot(i,(i.x??0)-1+(kind==='animal-trap'?2:0),(i.y??0)-1,String(n)))}
+    {kind==='ender-alloy' && <span className="batch-rf">{Number(info.energy).toLocaleString('de-DE')} RF</span>}
+    {kind==='decayables' && <div className="batch-decay-info"><span>Information</span><span>Time Taken</span><span style={{color:'#538000'}}>{Math.floor(info.time/1200)} Minutes</span></div>}
+    {kind==='binding' && <>
+      <span className="batch-ritual-icon" style={{left:0}} tabIndex={0}><img src={info.ritualIcon} alt="Ritual information" /><ItemTooltip followPointer><div>Ritual Name: Ritual of Binding</div><div>Activation Cost: 5,000</div></ItemTooltip></span>
+      <span className="batch-ritual-icon" style={{right:0}} tabIndex={0}><img src={info.reagentIcon} alt="Reagent information" /><ItemTooltip followPointer>No reagents can be added to this ritual.</ItemTooltip></span>
+    </>}
+  </div>;
+}
+
 function GameDefinedRecipeLayout({ recipe, definition, onBrowse }: { recipe: Recipe; definition: GameRecipeLayout; onBrowse?: Browse }) {
   const geometry = gameRecipeGeometry(definition, recipe.ingredients);
+  const special: Item | undefined = JSON.parse(recipe.layout).specialItem;
   return (
     <div className="game-defined-recipe-layout" style={{ width: geometry.width, height: geometry.height }} aria-label={recipe.handler + " recipe layout"}>
       {geometry.slots.map(({ ingredient, kind, direction, index, x, y, overlay }) => (
@@ -1357,6 +1416,7 @@ function GameDefinedRecipeLayout({ recipe, definition, onBrowse }: { recipe: Rec
       <CategorySymbol className="game-defined-progress" recipe={recipe} onBrowse={onBrowse}>
         <img className="faithful-recipe-symbol" src={"/ui/faithful/" + definition.texture + ".png"} alt="" aria-hidden="true" />
       </CategorySymbol>
+      {['Bio Lab', 'Circuit Assembly Line'].includes(recipe.handler) && <div className="game-defined-slot item" style={{ left: 216, top: 112 }}>{special ? <ItemSlot item={special} onBrowse={onBrowse} /> : <span className="item-slot empty-recipe-slot" />}{special && recipe.handler === 'Circuit Assembly Line' && <span className="tic-extruding-nc">NC</span>}</div>}
       {definition.decorations.map((decoration, index) => <img key={index} className="game-defined-decoration"
         src={"/ui/faithful/" + decoration.texture + ".png"} alt="" aria-hidden="true"
         style={{ left: (decoration.x - 16) * 2, top: (decoration.y - 6) * 2, width: decoration.width * 2, height: decoration.height * 2 }} />)}
@@ -1477,6 +1537,11 @@ const RecipeProcessContent = memo(function RecipeProcessContent({ recipe, onBrow
   const isCrafting = recipe.handler === "Shaped Crafting" || recipe.handler === "Shapeless Crafting";
   const crafting = isCrafting ? shapedCraftingSlots(recipe.ingredients) : null;
   let layout: {
+    information?: boolean;
+    informationImage?: string;
+    informationSlots?: { x: number; y: number; item: Item }[];
+    components?: { x: number; y: number; item: Item; description: string }[];
+    batchLayout?: string;
     background?: string;
     width?: number;
     height?: number;
@@ -1485,6 +1550,17 @@ const RecipeProcessContent = memo(function RecipeProcessContent({ recipe, onBrow
   try {
     layout = JSON.parse(recipe.layout);
   } catch {}
+  if (layout.information && layout.informationImage) return (
+    <div className="nei-information-scroll">
+      <div className="nei-information-page" style={{ width: (layout.width ?? 166) * 2, maxWidth: '100%', aspectRatio: `${layout.width ?? 166} / ${layout.height ?? 110}` }}>
+        <img src={layout.informationImage} alt={`${recipe.handler} information diagram`} draggable={false} />
+        {(layout.informationSlots ?? []).map((slot, index) => <div key={index} style={{ position: 'absolute', left: slot.x * 2, top: slot.y * 2 }}><ItemSlot item={slot.item} onBrowse={onBrowse} /></div>)}
+        {(layout.components ?? []).filter((c, i, all) => all.findIndex(a => a.x === c.x && a.y === c.y) === i).map((component, index) => (
+          <button key={index} className="nei-information-link" style={{ left: `${component.x / (layout.width ?? 166) * 100}%`, top: `${component.y / (layout.height ?? 110) * 100}%`, width: `${16 / (layout.width ?? 166) * 100}%`, height: `${16 / (layout.height ?? 110) * 100}%` }} title={component.item.name} aria-label={`Recipes for ${component.item.name}`} onClick={() => onBrowse?.(component.item, 'recipes')} onContextMenu={event => { event.preventDefault(); onBrowse?.(component.item, 'uses'); }} />
+        ))}
+      </div>
+    </div>
+  );
   return <>      {crafting ? (
         <div className="crafting-layout">
           <div
@@ -1537,6 +1613,8 @@ const RecipeProcessContent = memo(function RecipeProcessContent({ recipe, onBrow
             )}
           </div>
         </div>
+      ) : layout.batchLayout || ["Aspect Combination", "Clarifier"].includes(recipe.handler) ? (
+        <BatchRecipeLayout recipe={recipe} onBrowse={onBrowse} />
       ) : ["Shaped A.Worktable", "Shapeless A.Worktable", "Arcane Infusion", "Crucible", "SAG Mill", "Assemblyline Process", "Mob Info", "Research Station", "Scanner", "Space Mining", "Tree Growth Simulator", "Squeezer", "Brewing"].includes(recipe.handler) ? (
         <ScreenshotRecipeLayout recipe={recipe} onBrowse={onBrowse} />
       ) : recipe.handler === "Coke Oven" && !layout.slotCounts ? (

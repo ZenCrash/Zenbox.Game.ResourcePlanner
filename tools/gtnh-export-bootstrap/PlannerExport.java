@@ -57,6 +57,10 @@ public class PlannerExport {
             }
             if (world == null || player == null) return;
             if (phase == 1) {
+                if(new File(game,"planner-export.coverage-repairs").isFile()) { exportCoverageRepairs(mc); disabled=true;call(mc,"func_71400_g|shutdown");return; }
+                if(new File(game,"planner-export.coverage").isFile()) { exportCoverage(); disabled=true;call(mc,"func_71400_g|shutdown");return; }
+                if(new File(game,"planner-export.discovery").isFile()) { exportDiscovery(mc); if(!new File(game,"planner-export.faithful-icons").isFile()){disabled=true;call(mc,"func_71400_g|shutdown");return;} stacks.clear(); }
+                if(new File(game,"planner-export.batch-layouts").isFile()) { exportBatchLayouts(); disabled=true;call(mc,"func_71400_g|shutdown");return; }
                 if(new File(game,"planner-export.ores-only").isFile()) {
                     Class<?> ore = Class.forName("net.minecraftforge.oredict.OreDictionary");
                     Map<String,Object> groups = new TreeMap<String,Object>();
@@ -173,6 +177,10 @@ public class PlannerExport {
                             stacks.put(id,stack);
                         }catch(Throwable error){errors.add("Repair "+id+": "+error);}
                     }
+                    if(blocksOnly && new File(game,"planner-export.faithful-icons").isFile()) {
+                        Map<?,?> fluidRegistry=(Map<?,?>)call(Class.forName("net.minecraftforge.fluids.FluidRegistry"),"getRegisteredFluids");
+                        for(Object fluid:fluidRegistry.values())try{Object stack=call(Class.forName("gregtech.api.util.GTUtility"),"getFluidDisplayStack",fluid);if(stack!=null)stacks.put("fluid:"+call(fluid,"getName"),stack);}catch(Throwable error){errors.add("Fluid render: "+error);}
+                    }
                     phase=4;ticks=0;return;
                 }
                 if(new File(game,"planner-export.fluids-only").isFile()) {
@@ -249,7 +257,7 @@ public class PlannerExport {
             }
             if (phase == 4) {
                 status(blocksOnly?"rendering 256px block icons":"rendering original item icons");phase=5;
-                int iconSize=blocksOnly?256:32;
+                int iconSize=blocksOnly?256:new File(game,"planner-export.faithful-icons").isFile()?64:32;
                 Class<?> dumper=Class.forName("com.iouter.gtnhdumper.common.dumper.ItemIconDumper");
                 Object fbo=Class.forName("com.iouter.gtnhdumper.common.utils.FBOHelper").getConstructor(int.class).newInstance(iconSize);
                 Object renderer=call(Class.forName("net.minecraft.client.renderer.entity.RenderItem"),"getInstance");
@@ -323,6 +331,252 @@ public class PlannerExport {
         write("tooltip-variants.json",variants);write("tooltip-errors.json",errors);status("modifier tooltips complete: "+variants.size()+" / "+checked);
     }
 
+    private Object layoutValue(Object value,int depth) throws Exception {
+        if(value==null || value instanceof Number || value instanceof String || value instanceof Boolean)return value;
+        if(Class.forName("net.minecraft.item.ItemStack").isInstance(value))return castingItem(value);
+        if(depth<=0)return String.valueOf(value);
+        if(value instanceof Iterable){List<Object> values=new ArrayList<Object>();for(Object v:(Iterable<?>)value)values.add(layoutValue(v,depth-1));return values;}
+        if(value.getClass().isArray()){List<Object> values=new ArrayList<Object>();for(int i=0;i<Array.getLength(value);i++)values.add(layoutValue(Array.get(value,i),depth-1));return values;}
+        Map<String,Object> result=new LinkedHashMap<String,Object>();
+        for(Class<?> c=value.getClass();c!=null && !c.getName().startsWith("java.");c=c.getSuperclass())for(Field f:c.getDeclaredFields())if(!Modifier.isStatic(f.getModifiers())&&!f.getName().startsWith("this$")){try{f.setAccessible(true);result.put(f.getName(),layoutValue(f.get(value),depth-1));}catch(Throwable ignored){}}
+        return result;
+    }
+
+    private Map<String,Object> registeredHandlers() throws Exception {
+        Map<String,Object> result=new LinkedHashMap<String,Object>();
+        for(String[] source:new String[][]{{"GuiUsageRecipe","usagehandlers"},{"GuiUsageRecipe","serialUsageHandlers"},{"GuiCraftingRecipe","craftinghandlers"},{"GuiCraftingRecipe","serialCraftingHandlers"}})try {
+            for(Object h:(Iterable<?>)field(Class.forName("codechicken.nei.recipe."+source[0]),source[1]))result.put(h.getClass().getName()+":"+call(h,"getHandlerId")+":"+call(h,"getRecipeName"),h);
+        }catch(NoSuchFieldException ignored){}
+        return result;
+    }
+
+    private void exportCoverageRepairs(Object mc) throws Exception {
+        status("checking crafting, usage and serial handler registries");
+        Map<String,Object> registered=registeredHandlers();List<Object> registry=new ArrayList<Object>();
+        for(Object h:registered.values()){Map<String,Object> row=new LinkedHashMap<String,Object>();row.put("name",call(h,"getRecipeName"));row.put("id",call(h,"getHandlerId"));row.put("class",h.getClass().getName());registry.add(row);}
+        write("handler-registry.json",registry);
+        Object gson=Class.forName("com.google.gson.Gson").newInstance();
+        List<Map<String,Object>> pages=(List<Map<String,Object>>)call(gson,"fromJson",new String(Files.readAllBytes(new File(output,"information-pages.json").toPath()),StandardCharsets.UTF_8),List.class);
+        List<Map<String,Object>> coverage=(List<Map<String,Object>>)call(gson,"fromJson",new String(Files.readAllBytes(new File(output,"handler-coverage.json").toPath()),StandardCharsets.UTF_8),List.class);
+        call(Class.forName("codechicken.nei.recipe.GuiRecipeTab"),"loadHandlerInfo");call(Class.forName("codechicken.nei.recipe.RecipeCatalysts"),"loadCatalystInfo");
+        for(Object original:registered.values()) {
+            String id=String.valueOf(call(original,"getHandlerId"));List<Map<String,Object>> selected=new ArrayList<Map<String,Object>>();
+            for(Map<String,Object> p:pages)if(id.equals(p.get("handlerId")))selected.add(p);
+            if(original.getClass().getName().startsWith("com.github.dcysteine.neicustomdiagram.")) {
+                Collection<?> all=(Collection<?>)call(field(original,"matcher"),"all");
+                Object predicate=call(call(original,"info"),"emptyDiagramPredicate");
+                boolean showEmpty=Boolean.TRUE.equals(call(field(Class.forName("com.github.dcysteine.neicustomdiagram.main.config.ConfigOptions"),"SHOW_EMPTY_DIAGRAMS"),"get"));
+                if(all.size()==selected.size()){int i=0;for(Object diagram:all)selected.get(i++).put("hiddenEmpty",!showEmpty && Boolean.TRUE.equals(call(predicate,"test",diagram)));}
+                continue;
+            }
+            boolean known=false;for(Map<String,Object> c:coverage)if(id.equals(c.get("id")) && call(original,"getRecipeName").equals(c.get("name")))known=true;
+            if(!known) {
+                Map<String,Object> row=new LinkedHashMap<String,Object>();row.put("id",id);row.put("name",call(original,"getRecipeName"));row.put("class",original.getClass().getName());coverage.add(row);
+                Set<String> ids=new LinkedHashSet<String>();for(String getter:new String[]{"getOverlayIdentifier","getRecipeID","getHandlerId"})try{Object value=call(original,getter);if(value!=null)ids.add(value.toString());}catch(Throwable ignored){}
+                try{for(Object rect:(Iterable<?>)field(original,"transferRects"))ids.add(String.valueOf(field(rect,"outputId")));}catch(Throwable ignored){}
+                Object loaded=original;for(String candidate:ids)try{Object next=call(original,"getRecipeHandler",candidate,new Object[0]);if(((Number)call(next,"numRecipes")).intValue()>0){loaded=next;row.put("enumerationId",candidate);break;}}catch(Throwable ignored){}
+                int count=((Number)call(loaded,"numRecipes")).intValue();row.put("recipeCount",count);
+                Object info=call(Class.forName("codechicken.nei.recipe.GuiRecipeTab"),"getHandlerInfo",loaded);
+                for(int i=0;i<count;i++){Map<String,Object> page=new LinkedHashMap<String,Object>();page.put("handler",row.get("name"));page.put("handlerId",id);page.put("width",call(info,"getWidth"));page.put("height",call(info,"getHeight"));page.put("inputs",positioned(call(loaded,"getIngredientStacks",i)));page.put("outputs",positioned(call(loaded,"getResultStack",i)));page.put("other",positioned(call(loaded,"getOtherStacks",i)));page.put("tabItem",castingItem(call(info,"getItemStack")));page.put("capturedItems",true);page.put("referenceOnly",true);page.put("renderError","Pending full native capture");pages.add(page);selected.add(page);}
+            }
+            boolean customForeground=!original.getClass().getName().startsWith("com.github.dcysteine.neicustomdiagram.") && !original.getClass().getMethod("drawForeground",int.class).getDeclaringClass().getName().equals("codechicken.nei.recipe.TemplateRecipeHandler");
+            boolean failed=false;for(Map<String,Object> p:selected)if(p.containsKey("renderError"))failed=true;if(!failed && !customForeground)continue;
+            String enumeration=null;for(Map<String,Object> c:coverage)if(id.equals(c.get("id")))enumeration=(String)c.get("enumerationId");if(enumeration==null)continue;
+            Object h=call(original,"getRecipeHandler",enumeration,new Object[0]);
+            ArrayList<Object> current=new ArrayList<Object>();current.add(h);
+            Constructor<?> ctor=Class.forName("codechicken.nei.recipe.GuiCraftingRecipe").getDeclaredConstructor(ArrayList.class);ctor.setAccessible(true);Object gui=ctor.newInstance(current);
+            call(mc,"func_147108_a|displayGuiScreen",gui);
+            for(int i=0;i<selected.size();i++){Map<String,Object> page=selected.get(i);if(!page.containsKey("renderError") && !customForeground)continue;
+                String filename="information-repair-"+pages.indexOf(page)+".png";
+                try{captureInformation(h,null,i,((Number)page.get("width")).intValue(),((Number)page.get("height")).intValue(),filename);page.put("image",filename);page.put("foregroundCaptured",true);page.remove("renderError");}catch(Throwable e){page.put("renderError",e.toString()+" / "+e.getCause());}
+            }
+            call(mc,"func_147108_a|displayGuiScreen",new Object[]{null});
+        }
+        write("information-pages.json",pages);write("handler-coverage.json",coverage);status("registry and GUI-dependent capture repair complete: "+registry.size()+" registrations");
+    }
+
+    private void exportCoverage() throws Exception {
+        Set<String> referenceTargets=new HashSet<String>();
+        File targetsFile=new File(output.getParentFile().getParentFile(),"planner-export.coverage-targets.json");
+        if(targetsFile.isFile()){Object gson=Class.forName("com.google.gson.Gson").newInstance();for(Object id:(List<?>)call(gson,"fromJson",new String(Files.readAllBytes(targetsFile.toPath()),StandardCharsets.UTF_8),List.class))referenceTargets.add(String.valueOf(id));}
+        // These are NEI lookup aliases, not interchangeable crafting ingredients.
+        status("exporting GregTech lookup associations");
+        Class<?> unifier=Class.forName("gregtech.api.util.GTOreDictUnificator");
+        Class<?> ore=Class.forName("net.minecraftforge.oredict.OreDictionary");
+        Map<String,Object> candidates=new LinkedHashMap<String,Object>();
+        for(String name:(String[])call(ore,"getOreNames"))for(Object stack:(Iterable<?>)call(ore,"getOres",name))candidates.put(addStack(stack),stack);
+        try{for(Object stack:(Iterable<?>)field(Class.forName("codechicken.nei.ItemList"),"items"))candidates.put(addStack(stack),stack);}catch(Throwable ignored){}
+        List<Object> aliases=new ArrayList<Object>();
+        for(Map.Entry<String,Object> entry:candidates.entrySet())try {
+            Object stack=entry.getValue(),association=call(unifier,"getAssociation",stack);
+            Map<String,Object> row=new LinkedHashMap<String,Object>();row.put("item",entry.getKey());
+            for(boolean outputSide:new boolean[]{true,false}) {
+                Set<String> ids=new LinkedHashSet<String>();ids.add(entry.getKey());
+                String unified=addStack(call(unifier,"get",outputSide,stack));if(unified!=null)ids.add(unified);
+                if(association!=null && (!outputSide || !Boolean.TRUE.equals(field(association,"mBlackListed")))) {
+                    Object prefix=field(association,"mPrefix"),material=field(field(association,"mMaterial"),"mMaterial");
+                    if(prefix!=null)for(Object familiar:(Iterable<?>)field(prefix,"mFamiliarPrefixes")){String id=addStack(call(unifier,"get",familiar,material,1L));if(id!=null)ids.add(id);}
+                }
+                if(outputSide && String.valueOf(call(stack,"func_77977_a|getUnlocalizedName")).startsWith("gt.blockores")) {
+                    int meta=((Number)call(stack,"func_77960_j|getItemDamage")).intValue();
+                    for(int i=0;i<8;i++){Object copy=call(stack,"func_77946_l|copy");call(copy,"func_77964_b|setItemDamage",meta%1000+i*1000);ids.add(addStack(copy));}
+                }
+                row.put(outputSide?"recipes":"uses",ids);
+            }
+            if(((Set<?>)row.get("recipes")).size()>1 || ((Set<?>)row.get("uses")).size()>1)aliases.add(row);
+        }catch(Throwable e){errors.add("Lookup "+entry.getKey()+": "+e);}
+        write("lookup-associations.json",aliases);
+        status("auditing every registered NEI handler");
+        List<Object> handlers=new ArrayList<Object>(),information=new ArrayList<Object>(),references=new ArrayList<Object>();
+        call(Class.forName("codechicken.nei.recipe.GuiRecipeTab"),"loadHandlerInfo");
+        for(Object original:registeredHandlers().values()) {
+            Object h=original;Map<String,Object> row=new LinkedHashMap<String,Object>();handlers.add(row);
+            try {
+                row.put("name",call(h,"getRecipeName"));row.put("id",call(h,"getHandlerId"));row.put("class",h.getClass().getName());
+                if(h.getClass().getName().startsWith("com.github.dcysteine.neicustomdiagram.")) {
+                    h=call(h,"getRecipeHandler",row.get("id"),new Object[0]);
+                    Collection<?> diagrams=(Collection<?>)field(h,"diagrams");row.put("recipeCount",diagrams.size());
+                    Object state=field(h,"diagramState");
+                    for(Object diagram:diagrams) {
+                        Map<String,Object> page=new LinkedHashMap<String,Object>();page.put("handler",row.get("name"));page.put("handlerId",row.get("id"));
+                        Object dimension=call(diagram,"dimension",state);int width=((Number)call(dimension,"width")).intValue(),height=((Number)call(dimension,"height")).intValue();page.put("width",width);page.put("height",height);
+                        List<Object> components=new ArrayList<Object>();
+                        for(Object interactable:(Iterable<?>)call(diagram,"interactables",state))try {
+                            Object pos=call(interactable,"position");
+                            for(Object display:(Iterable<?>)field(interactable,"components")) {
+                                Map<String,Object> component=new LinkedHashMap<String,Object>();Object stack=call(display,"stack");
+                                if(Class.forName("net.minecraft.item.ItemStack").isInstance(stack))component.put("item",castingItem(stack));
+                                component.put("description",call(display,"description"));component.put("x",call(pos,"x"));component.put("y",call(pos,"y"));components.add(component);
+                            }
+                        }catch(NoSuchFieldException ignored){}
+                        page.put("components",components);
+                        String filename="information-"+information.size()+".png";
+                        try{captureInformation(diagram,state,-1,width,height,filename);page.put("image",filename);}catch(Throwable e){page.put("renderError",e.toString()+" / "+e.getCause());}
+                        information.add(page);
+                    }
+                } else {
+                    Set<String> ids=new LinkedHashSet<String>();
+                    for(String getter:new String[]{"getOverlayIdentifier","getRecipeID","getHandlerId"})try{Object id=call(h,getter);if(id!=null)ids.add(id.toString());}catch(Throwable ignored){}
+                    try{for(Object rect:(Iterable<?>)field(h,"transferRects"))ids.add(String.valueOf(field(rect,"outputId")));}catch(Throwable ignored){}
+                    List<String> failures=new ArrayList<String>();
+                    for(String id:ids)try{Object loaded=call(original,"getRecipeHandler",id,new Object[0]);if(((Number)call(loaded,"numRecipes")).intValue()>0){h=loaded;row.put("enumerationId",id);break;}}catch(Throwable e){failures.add(id+": "+e+" / "+e.getCause());}
+                    int count=((Number)call(h,"numRecipes")).intValue();row.put("recipeCount",count);if(count==0)row.put("enumerationFailures",failures);
+                    List<Object> shapes=new ArrayList<Object>();Set<String> seen=new HashSet<String>();
+                    for(int i=0;i<count;i++) {
+                        Map<String,Object> sample=new LinkedHashMap<String,Object>();sample.put("inputs",positioned(call(h,"getIngredientStacks",i)));sample.put("outputs",positioned(call(h,"getResultStack",i)));sample.put("other",positioned(call(h,"getOtherStacks",i)));
+                        StringBuilder key=new StringBuilder();for(String side:new String[]{"inputs","outputs","other"}){key.append(side);for(Object raw:(List<?>)sample.get(side)){Map<?,?> p=(Map<?,?>)raw;key.append(p.get("x")).append(',').append(p.get("y")).append(';');}}
+                        boolean newShape=seen.add(key.toString());if(newShape){sample.put("index",i);shapes.add(sample);}
+                        boolean nativeReference=referenceTargets.contains(String.valueOf(row.get("id")));
+                        if(row.get("name").equals("Tool Materials") || nativeReference) {
+                            Object info=call(Class.forName("codechicken.nei.recipe.GuiRecipeTab"),"getHandlerInfo",h);
+                            int width=((Number)call(info,"getWidth")).intValue(),height=((Number)call(info,"getHeight")).intValue();
+                            Map<String,Object> page=new LinkedHashMap<String,Object>(sample);page.put("handler",row.get("name"));page.put("handlerId",row.get("id"));page.put("width",width);page.put("height",height);page.put("capturedItems",true);page.put("referenceOnly",nativeReference);
+                            String filename="information-"+information.size()+".png";
+                            try{captureInformation(h,null,i,width,height,filename);page.put("image",filename);}catch(Throwable e){page.put("renderError",e.toString()+" / "+e.getCause());}
+                            information.add(page);
+                        } else if(newShape && !h.getClass().getName().equals("gregtech.nei.GTNEIDefaultHandler")) {
+                            Object info=call(Class.forName("codechicken.nei.recipe.GuiRecipeTab"),"getHandlerInfo",h);
+                            Map<String,Object> reference=new LinkedHashMap<String,Object>();reference.put("handler",row.get("name"));reference.put("handlerId",row.get("id"));reference.put("index",i);
+                            String filename="layout-reference-"+references.size()+".png";
+                            try{captureInformation(h,null,i,((Number)call(info,"getWidth")).intValue(),((Number)call(info,"getHeight")).intValue(),filename);reference.put("image",filename);}catch(Throwable e){reference.put("renderError",e.toString()+" / "+e.getCause());}
+                            references.add(reference);
+                        }
+                    }
+                    row.put("slotShapes",shapes);
+                }
+            }catch(Throwable e){row.put("error",e.toString()+" / "+e.getCause());}
+            status("audited "+handlers.size()+" handlers; "+information.size()+" information pages");
+        }
+        write("handler-coverage.json",handlers);write("information-pages.json",information);write("native-layout-references.json",references);write("coverage-errors.json",errors);
+        status("coverage complete: "+handlers.size()+" handlers, "+aliases.size()+" lookups, "+information.size()+" information pages");
+    }
+
+    private void captureInformation(Object target,Object state,int index,int width,int height,String filename) throws Exception {
+        int size=512;while(size<Math.max(width,height)*2 && size<4096)size*=2;
+        if(width*2>size || height*2>size)throw new IllegalArgumentException("Information page exceeds capture bounds");
+        Object fbo=Class.forName("com.iouter.gtnhdumper.common.utils.FBOHelper").getConstructor(int.class).newInstance(size);
+        Class<?> gl=Class.forName("com.gtnewhorizons.angelica.glsm.GLStateManager");
+        call(fbo,"begin");call(gl,"glMatrixMode",5889);call(gl,"glPushMatrix");call(gl,"glLoadIdentity");call(gl,"glOrtho",0d,size/2d,size/2d,0d,-1000d,1000d);call(gl,"glMatrixMode",5888);call(gl,"glPushMatrix");call(gl,"glLoadIdentity");
+        try {
+            call(Class.forName("org.lwjgl.opengl.GL11"),"glCullFace",1029);call(gl,"disableLighting");call(gl,"disableDepthTest");call(gl,"glColor4f",1f,1f,1f,1f);
+            if(index<0){call(target,"drawBackground",state);call(target,"drawForeground",state);}else{
+                call(target,"drawBackground",index);call(target,"drawForeground",index);
+                List<Object> shown=new ArrayList<Object>();for(Object p:(Iterable<?>)call(target,"getIngredientStacks",index))shown.add(p);for(Object p:(Iterable<?>)call(target,"getOtherStacks",index))shown.add(p);Object result=call(target,"getResultStack",index);if(result!=null)shown.add(result);
+                for(Object p:shown)call(Class.forName("codechicken.nei.guihook.GuiContainerManager"),"drawItem",field(p,"relx"),field(p,"rely"),field(p,"item"));
+            }
+        } finally {
+            try{call(field(Class.forName("net.minecraft.client.renderer.Tessellator"),"field_78398_a|instance"),"func_78381_a|draw");}catch(Throwable ignored){}
+            call(gl,"glMatrixMode",5888);call(gl,"glPopMatrix");call(gl,"glMatrixMode",5889);call(gl,"glPopMatrix");call(gl,"glMatrixMode",5888);call(fbo,"end");
+        }
+        java.awt.image.BufferedImage raw=(java.awt.image.BufferedImage)call(fbo,"saveToImage");
+        java.awt.image.BufferedImage image=new java.awt.image.BufferedImage(Math.max(1,width*2),Math.max(1,height*2),java.awt.image.BufferedImage.TYPE_INT_ARGB);
+        for(int y=0;y<image.getHeight();y++)for(int x=0;x<image.getWidth();x++)image.setRGB(x,y,raw.getRGB(x,raw.getHeight()-1-y));
+        File dir=new File(output,"information-images");dir.mkdirs();javax.imageio.ImageIO.write(image,"png",new File(dir,filename));call(fbo,"restoreTexture");
+        Method release=fbo.getClass().getDeclaredMethod("deleteFramebuffer");release.setAccessible(true);release.invoke(fbo);
+    }
+
+    private void exportDiscovery(Object mc) throws Exception {
+        status("discovering NEI handlers, registry container links and resource packs");
+        Map<String,Object> result=new LinkedHashMap<String,Object>();
+        result.put("resourcePacks",field(field(mc,"field_71474_y|gameSettings"),"field_151453_l|resourcePacks"));
+        List<Object> containers=new ArrayList<Object>();
+        for(Object c:(Object[])call(Class.forName("net.minecraftforge.fluids.FluidContainerRegistry"),"getRegisteredFluidContainerData"))try {
+            Map<String,Object> row=new LinkedHashMap<String,Object>();Object fluid=field(c,"fluid");
+            row.put("fluid","fluid:"+call(call(fluid,"getFluid"),"getName"));row.put("amount",field(fluid,"amount"));
+            row.put("filled",castingItem(field(c,"filledContainer")));row.put("empty",castingItem(field(c,"emptyContainer")));containers.add(row);
+        }catch(Throwable e){errors.add("Container: "+e);}
+        result.put("containers",containers);
+        List<Object> handlers=new ArrayList<Object>();
+        call(Class.forName("codechicken.nei.recipe.GuiRecipeTab"),"loadHandlerInfo");
+        call(Class.forName("codechicken.nei.recipe.RecipeCatalysts"),"loadCatalystInfo");
+        File images=new File(output,"discovery-backgrounds");images.mkdirs();
+        Object fbo=Class.forName("com.iouter.gtnhdumper.common.utils.FBOHelper").getConstructor(int.class).newInstance(512);
+        Class<?> gl=Class.forName("com.gtnewhorizons.angelica.glsm.GLStateManager");
+        for(Object h:(Iterable<?>)field(Class.forName("codechicken.nei.recipe.GuiUsageRecipe"),"usagehandlers")) {
+            Map<String,Object> row=new LinkedHashMap<String,Object>();handlers.add(row);
+            try {
+                row.put("name",call(h,"getRecipeName"));row.put("id",call(h,"getHandlerId"));row.put("class",h.getClass().getName());
+                Object info=call(Class.forName("codechicken.nei.recipe.GuiRecipeTab"),"getHandlerInfo",h);
+                row.put("width",call(info,"getWidth"));row.put("height",call(info,"getHeight"));row.put("yShift",call(info,"getYShift"));
+                row.put("tabItem",castingItem(call(info,"getItemStack")));row.put("tabImage",layoutValue(call(info,"getImage"),2));
+                row.put("machines",positioned(call(Class.forName("codechicken.nei.recipe.RecipeCatalysts"),"getRecipeCatalysts",h)));
+                try{row.put("texture",call(h,"getGuiTexture"));}catch(Throwable ignored){}
+                try{call(h,"loadCraftingRecipes",call(h,"getOverlayIdentifier"),new Object[0]);}catch(Throwable e){row.put("enumerationError",e.toString());}
+                int count=((Number)call(h,"numRecipes")).intValue();row.put("recipeCount",count);
+                if(count>0){
+                    row.put("inputs",positioned(call(h,"getIngredientStacks",0)));row.put("outputs",positioned(call(h,"getResultStack",0)));row.put("other",positioned(call(h,"getOtherStacks",0)));
+                    try {
+                        call(fbo,"begin");call(gl,"glMatrixMode",5889);call(gl,"glPushMatrix");call(gl,"glLoadIdentity");call(gl,"glOrtho",0d,256d,256d,0d,-1000d,1000d);call(gl,"glMatrixMode",5888);call(gl,"glPushMatrix");call(gl,"glLoadIdentity");call(gl,"glColor4f",1f,1f,1f,1f);
+                        try{call(field(Class.forName("net.minecraft.client.renderer.Tessellator"),"field_78398_a|instance"),"func_78381_a|draw");}catch(Throwable ignored){}
+                        call(Class.forName("org.lwjgl.opengl.GL11"),"glCullFace",1029);call(gl,"disableLighting");call(gl,"disableDepthTest");
+                        call(h,"drawBackground",0);
+                        call(gl,"glMatrixMode",5888);call(gl,"glPopMatrix");call(gl,"glMatrixMode",5889);call(gl,"glPopMatrix");call(gl,"glMatrixMode",5888);call(fbo,"end");
+                        String filename="handler-"+handlers.size()+".png";java.awt.image.BufferedImage capture=(java.awt.image.BufferedImage)call(fbo,"saveToImage");boolean nonblank=false;for(int py=0;py<capture.getHeight()&&!nonblank;py++)for(int px=0;px<capture.getWidth();px++)if((capture.getRGB(px,py)&0x00ffffff)!=0 && (capture.getRGB(px,py)>>>24)!=0){nonblank=true;break;}if(nonblank){javax.imageio.ImageIO.write(capture,"png",new File(images,filename));row.put("background",filename);}else row.put("renderError","Empty background capture");call(fbo,"restoreTexture");
+                    }catch(Throwable e){row.put("renderError",e.toString()+" / "+e.getCause());try{call(field(Class.forName("net.minecraft.client.renderer.Tessellator"),"field_78398_a|instance"),"func_78381_a|draw");}catch(Throwable ignored){}try{call(gl,"glMatrixMode",5888);call(gl,"glPopMatrix");call(gl,"glMatrixMode",5889);call(gl,"glPopMatrix");call(gl,"glMatrixMode",5888);call(fbo,"end");call(fbo,"restoreTexture");}catch(Throwable ignored){}}
+                }
+            }catch(Throwable e){row.put("error",e.toString());}
+            if(handlers.size()%20==0)status("discovered "+handlers.size()+" handlers");
+        }
+        result.put("handlers",handlers);List<Object> items=new ArrayList<Object>();for(Object stack:new ArrayList<Object>(stacks.values()))try{items.add(castingItem(stack));}catch(Throwable ignored){}result.put("items",items);
+        write("discovery.json",result);write("discovery-errors.json",errors);status("discovery complete: "+handlers.size()+" handlers, "+containers.size()+" containers");
+    }
+
+    private void exportBatchLayouts() throws Exception {
+        List<Object> rows=new ArrayList<Object>();
+        for(Object h:(Iterable<?>)field(Class.forName("codechicken.nei.recipe.GuiUsageRecipe"),"usagehandlers"))try {
+            String name=String.valueOf(call(h,"getRecipeName"));
+            if(!Arrays.asList("Acclimatiser","Alchemic Calcinator","Alloy Smelter","Analyzer","Animal Trap Drops","Binding Ritual","Decayables","Baryonic Perfection","Bio Lab","Circuit Assembly Line","Clarifier","Cold Trap","Degassing","Multiblock Dehydrator","Multiblock Dehydration","Digester","Dissolution Tank","Draconic Evolution Fusion ...").contains(name))continue;
+            call(h,"loadCraftingRecipes",call(h,"getOverlayIdentifier"),new Object[0]);
+            List<?> cached=(List<?>)field(h,"arecipes");
+            for(int i=0;i<cached.size();i++)try {
+                Map<String,Object> r=new LinkedHashMap<String,Object>();r.put("handler",name);r.put("class",h.getClass().getName());r.put("inputs",positioned(call(h,"getIngredientStacks",i)));r.put("outputs",positioned(call(h,"getResultStack",i)));r.put("other",positioned(call(h,"getOtherStacks",i)));
+                Object c=cached.get(i);r.put("fields",layoutValue(c,2));
+                try{r.put("texture",call(h,"getGuiTexture"));}catch(Throwable ignored){}
+                rows.add(r);
+            }catch(Throwable e){errors.add(name+" recipe "+i+": "+e);}
+        }catch(Throwable e){errors.add("Batch layout: "+e+" / "+e.getCause());}
+        write("batch-layouts.json",rows);List<Object> items=new ArrayList<Object>();for(Object stack:new ArrayList<Object>(stacks.values()))try{items.add(castingItem(stack));}catch(Throwable ignored){}write("batch-items.json",items);write("batch-errors.json",errors);status("batch layouts complete: "+rows.size());
+    }
     private void exportMoreLayouts() throws Exception {
         status("capturing additional recipe layouts");List<Object> rows=new ArrayList<Object>();
         for(Object handler:(Iterable<?>)field(Class.forName("codechicken.nei.recipe.GuiUsageRecipe"),"usagehandlers"))try {

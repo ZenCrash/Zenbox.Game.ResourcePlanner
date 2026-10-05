@@ -153,7 +153,7 @@ for (const handler of handlers) {
       handler: handler.name,
       durationTicks: raw.durationTicks ?? 0,
       euPerTick: raw.euPerTick ?? 0,
-      enabled: raw.enabled !== false && raw.hidden !== true,
+      enabled: handler.name !== "Circuit Assembly Line Imprinting" && raw.enabled !== false && raw.hidden !== true,
       layout: {
         ...(handler.kind === "gregtech" &&
         (handler.slotCounts ?? recipeSlots[handler.overlay])

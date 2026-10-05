@@ -1,0 +1,98 @@
+[
+  {
+    "name": "acclimatiser",
+    "source": "assets/genetics/textures/gui/nei/acclimatiser.png",
+    "archive": "GTNH-Faithful-x32.v2.1.4.zip",
+    "rect": [
+      5,
+      11,
+      166,
+      80
+    ],
+    "scale": 2
+  },
+  {
+    "name": "analyzer",
+    "source": "assets/genetics/textures/gui/nei/analyser.png",
+    "archive": "GTNH-Faithful-x32.v2.1.4.zip",
+    "rect": [
+      5,
+      11,
+      166,
+      76
+    ],
+    "scale": 2
+  },
+  {
+    "name": "calcinator",
+    "source": "assets/alchemicalwizardry/gui/nei/calcinator.png",
+    "archive": "BloodMagic-1.7.52.jar",
+    "rect": [
+      5,
+      11,
+      166,
+      50
+    ],
+    "scale": 1
+  },
+  {
+    "name": "binding",
+    "source": "assets/alchemicalwizardry/gui/nei/bindingRitual.png",
+    "archive": "BloodMagic-1.7.52.jar",
+    "rect": [
+      5,
+      11,
+      166,
+      65
+    ],
+    "scale": 1
+  },
+  {
+    "name": "ender-alloy",
+    "source": "assets/enderio/textures/gui/nei/alloySmelter.png",
+    "archive": "GTNH-Faithful-x32.v2.1.4.zip",
+    "rect": [
+      0,
+      0,
+      166,
+      65
+    ],
+    "scale": 2
+  },
+  {
+    "name": "animal-trap",
+    "source": "assets/harvestcraft/textures/gui/animaltrap.png",
+    "archive": "harvestcraft-1.3.2-GTNH.jar",
+    "rect": [
+      3,
+      8,
+      170,
+      66
+    ],
+    "scale": 1
+  },
+  {
+    "name": "decayables",
+    "source": "assets/miscutils/textures/gui/nei/decayables.png",
+    "archive": "GTNH-Faithful-x32.v2.1.4.zip",
+    "rect": [
+      5,
+      11,
+      166,
+      65
+    ],
+    "scale": 2
+  },
+  {
+    "name": "clarifier",
+    "source": "assets/gregtech/textures/gui/progressbar/clarifier.png",
+    "archive": "gregtech-5.09.51.482.jar",
+    "rect": [
+      0,
+      0,
+      170,
+      80
+    ],
+    "scale": 1
+  }
+]
